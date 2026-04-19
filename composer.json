@@ -29,7 +29,13 @@
     "autoload-dev": {
         "psr-4": {
             "VeronaLabs\\WpPremiumSdk\\Tests\\": "tests/"
-        }
+        },
+        "exclude-from-classmap": [
+            "tests/wp-functions.php"
+        ]
+    },
+    "scripts": {
+        "test": "phpunit --no-coverage"
     },
     "config": {
         "optimize-autoloader": true,
