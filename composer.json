@@ -1,0 +1,40 @@
+{
+    "name": "veronalabs/wp-premium-sdk",
+    "description": "Shared PHP SDK for VeronaLabs premium WordPress plugins: Nexus license activation, OAuth account login, unified manifest updates, module installation.",
+    "type": "library",
+    "license": "GPL-2.0+",
+    "keywords": ["wordpress", "plugin", "license", "updates", "nexus", "veronalabs"],
+    "authors": [
+        {
+            "name": "VeronaLabs",
+            "email": "developer@veronalabs.com",
+            "homepage": "https://veronalabs.com"
+        }
+    ],
+    "require": {
+        "php": ">=7.4",
+        "ext-sodium": "*",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.6",
+        "yoast/phpunit-polyfills": "^1.1",
+        "squizlabs/php_codesniffer": "^3.7"
+    },
+    "autoload": {
+        "psr-4": {
+            "VeronaLabs\\WpPremiumSdk\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "VeronaLabs\\WpPremiumSdk\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
