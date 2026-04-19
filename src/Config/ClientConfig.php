@@ -43,6 +43,8 @@ final class ClientConfig
 
         $data['ajax_action'] = $data['ajax_action'] ?? $data['product_slug'];
         $data['modules_path'] = $data['modules_path'] ?? '';
+        $data['nonce_action'] = $data['nonce_action'] ?? '';
+        $data['nonce_param'] = $data['nonce_param'] ?? 'nonce';
 
         $this->data = $data;
     }
@@ -97,5 +99,26 @@ final class ClientConfig
     public function modulesPath(): string
     {
         return $this->data['modules_path'];
+    }
+
+    /**
+     * Nonce action passed to wp_create_nonce/check_ajax_referer. When empty,
+     * each endpoint derives its own per-endpoint action from ajaxAction() +
+     * action name. Plugins that share one nonce across endpoints (e.g. a
+     * dashboard-wide nonce) should set this explicitly.
+     */
+    public function nonceAction(): string
+    {
+        return $this->data['nonce_action'];
+    }
+
+    /**
+     * POST/GET parameter name the AJAX client sends the nonce under.
+     * Defaults to "nonce" — override when the plugin's React client uses
+     * a different key (e.g. "wp_statistics_nonce").
+     */
+    public function nonceParam(): string
+    {
+        return $this->data['nonce_param'];
     }
 }

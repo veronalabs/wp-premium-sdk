@@ -32,7 +32,10 @@ abstract class AbstractAjaxEndpoint
             return;
         }
 
-        check_ajax_referer($this->config->ajaxAction().'_'.$this->getActionName(), 'nonce');
+        $nonceAction = $this->config->nonceAction()
+            ?: $this->config->ajaxAction().'_'.$this->getActionName();
+
+        check_ajax_referer($nonceAction, $this->config->nonceParam());
 
         $subAction = isset($_POST['sub_action']) ? sanitize_text_field(wp_unslash($_POST['sub_action'])) : '';
         $handlers = $this->getSubActions();

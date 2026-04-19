@@ -142,7 +142,7 @@ class PremiumServiceProvider
 
         $this->accountClient = new AccountClient($this->config, $this->http);
         $this->accountManager = new AccountManager($this->config, $this->accountClient, $this->store, $this->encryptor);
-        $this->accountEndpoints = new AccountEndpoints($this->config, $this->accountManager, $this->licenseManager);
+        $this->accountEndpoints = new AccountEndpoints($this->config, $this->accountManager, $this->licenseManager, $this->accountClient);
         $this->accountBootstrap = new AccountBootstrap($this->config, $this->accountManager, $this->licenseManager, $this->accountEndpoints);
 
         $this->moduleLoader = new ModuleLoader($this->config, $this->licenseManager);
