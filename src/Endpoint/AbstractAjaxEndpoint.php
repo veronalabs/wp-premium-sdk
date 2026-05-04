@@ -16,7 +16,12 @@ use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
  */
 abstract class AbstractAjaxEndpoint
 {
-    public function __construct(protected ClientConfig $config) {}
+    protected ClientConfig $config;
+
+    public function __construct(ClientConfig $config)
+    {
+        $this->config = $config;
+    }
 
     public function register(): void
     {

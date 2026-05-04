@@ -14,10 +14,14 @@ use VeronaLabs\WpPremiumSdk\Http\ApiClient;
  */
 class LicenseClient
 {
-    public function __construct(
-        private ClientConfig $config,
-        private ApiClient $http,
-    ) {}
+    private ClientConfig $config;
+    private ApiClient $http;
+
+    public function __construct(ClientConfig $config, ApiClient $http)
+    {
+        $this->config = $config;
+        $this->http = $http;
+    }
 
     /**
      * @throws Exception

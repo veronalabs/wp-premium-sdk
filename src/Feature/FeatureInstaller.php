@@ -16,7 +16,12 @@ use WP_Error;
  */
 class FeatureInstaller
 {
-    public function __construct(private ClientConfig $config) {}
+    private ClientConfig $config;
+
+    public function __construct(ClientConfig $config)
+    {
+        $this->config = $config;
+    }
 
     /**
      * Install a single module from a signed URL.

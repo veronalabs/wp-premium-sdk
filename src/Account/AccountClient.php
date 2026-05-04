@@ -11,10 +11,14 @@ use VeronaLabs\WpPremiumSdk\Http\ApiClient;
  */
 class AccountClient
 {
-    public function __construct(
-        private ClientConfig $config,
-        private ApiClient $http,
-    ) {}
+    private ClientConfig $config;
+    private ApiClient $http;
+
+    public function __construct(ClientConfig $config, ApiClient $http)
+    {
+        $this->config = $config;
+        $this->http = $http;
+    }
 
     /**
      * Exchange an OAuth authorization code for an access token via Nexus.

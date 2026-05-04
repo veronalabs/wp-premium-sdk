@@ -17,12 +17,18 @@ use VeronaLabs\WpPremiumSdk\Support\Request;
  */
 class LicenseManager
 {
-    public function __construct(
-        private LicenseClient $client,
-        private PremiumStore $store,
-        private EncryptorInterface $encryptor,
-        private FeatureInstaller $featureInstaller,
-    ) {}
+    private LicenseClient $client;
+    private PremiumStore $store;
+    private EncryptorInterface $encryptor;
+    private FeatureInstaller $featureInstaller;
+
+    public function __construct(LicenseClient $client, PremiumStore $store, EncryptorInterface $encryptor, FeatureInstaller $featureInstaller)
+    {
+        $this->client = $client;
+        $this->store = $store;
+        $this->encryptor = $encryptor;
+        $this->featureInstaller = $featureInstaller;
+    }
 
     /**
      * Activate a license key on this site.

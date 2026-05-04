@@ -15,10 +15,14 @@ use VeronaLabs\WpPremiumSdk\License\LicenseManager;
  */
 class ModuleLoader
 {
-    public function __construct(
-        private ClientConfig $config,
-        private LicenseManager $license,
-    ) {}
+    private ClientConfig $config;
+    private LicenseManager $license;
+
+    public function __construct(ClientConfig $config, LicenseManager $license)
+    {
+        $this->config = $config;
+        $this->license = $license;
+    }
 
     public function register(): void
     {

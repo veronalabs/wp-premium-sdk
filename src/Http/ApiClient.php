@@ -13,7 +13,12 @@ use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
  */
 class ApiClient
 {
-    public function __construct(private ClientConfig $config) {}
+    private ClientConfig $config;
+
+    public function __construct(ClientConfig $config)
+    {
+        $this->config = $config;
+    }
 
     /**
      * @param  array<string, mixed>  $query
@@ -79,7 +84,7 @@ class ApiClient
         }
 
         foreach (['.test', '.local', '.localhost'] as $localTld) {
-            if (str_ends_with($host, $localTld)) {
+            if (substr($host, -strlen($localTld)) === $localTld) {
                 return false;
             }
         }

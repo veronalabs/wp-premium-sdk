@@ -7,7 +7,11 @@ namespace VeronaLabs\WpPremiumSdk\Support;
  */
 class Request
 {
-    public static function get(string $key, mixed $default = ''): mixed
+    /**
+     * @param mixed $default
+     * @return mixed
+     */
+    public static function get(string $key, $default = '')
     {
         if (isset($_POST[$key])) {
             return is_array($_POST[$key])
@@ -42,7 +46,7 @@ class Request
             return '';
         }
 
-        if (str_starts_with($host, 'www.')) {
+        if (strpos($host, 'www.') === 0) {
             $host = substr($host, 4);
         }
 

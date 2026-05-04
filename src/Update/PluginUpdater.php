@@ -18,12 +18,18 @@ class PluginUpdater
 {
     public const MANIFEST_CACHE_KEY_PREFIX = 'wp_premium_sdk_manifest_';
 
-    public function __construct(
-        private ClientConfig $config,
-        private LicenseClient $client,
-        private LicenseManager $license,
-        private string $pluginBasename,
-    ) {}
+    private ClientConfig $config;
+    private LicenseClient $client;
+    private LicenseManager $license;
+    private string $pluginBasename;
+
+    public function __construct(ClientConfig $config, LicenseClient $client, LicenseManager $license, string $pluginBasename)
+    {
+        $this->config = $config;
+        $this->client = $client;
+        $this->license = $license;
+        $this->pluginBasename = $pluginBasename;
+    }
 
     public function register(): void
     {

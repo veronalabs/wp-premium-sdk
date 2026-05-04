@@ -13,7 +13,12 @@ class SodiumEncryptor implements EncryptorInterface
 {
     private ?string $cachedKey = null;
 
-    public function __construct(private string $cipherOptionKey) {}
+    private string $cipherOptionKey;
+
+    public function __construct(string $cipherOptionKey)
+    {
+        $this->cipherOptionKey = $cipherOptionKey;
+    }
 
     public function encrypt(string $plaintext): string
     {

@@ -18,7 +18,12 @@ class PremiumStore
     /** @var array<string, array<string, mixed>>|null */
     private ?array $cache = null;
 
-    public function __construct(private ClientConfig $config) {}
+    private ClientConfig $config;
+
+    public function __construct(ClientConfig $config)
+    {
+        $this->config = $config;
+    }
 
     /**
      * @return array<string, mixed>|null Null if the section is empty/absent.

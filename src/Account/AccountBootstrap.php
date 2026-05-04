@@ -13,12 +13,18 @@ use VeronaLabs\WpPremiumSdk\License\LicenseManager;
  */
 class AccountBootstrap
 {
-    public function __construct(
-        private ClientConfig $config,
-        private AccountManager $manager,
-        private LicenseManager $licenseManager,
-        private AccountEndpoints $endpoints,
-    ) {}
+    private ClientConfig $config;
+    private AccountManager $manager;
+    private LicenseManager $licenseManager;
+    private AccountEndpoints $endpoints;
+
+    public function __construct(ClientConfig $config, AccountManager $manager, LicenseManager $licenseManager, AccountEndpoints $endpoints)
+    {
+        $this->config = $config;
+        $this->manager = $manager;
+        $this->licenseManager = $licenseManager;
+        $this->endpoints = $endpoints;
+    }
 
     public function register(): void
     {

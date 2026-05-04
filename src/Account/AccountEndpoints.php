@@ -16,13 +16,16 @@ use VeronaLabs\WpPremiumSdk\Support\Request;
  */
 class AccountEndpoints extends AbstractAjaxEndpoint
 {
-    public function __construct(
-        ClientConfig $config,
-        private AccountManager $manager,
-        private LicenseManager $licenseManager,
-        private AccountClient $client,
-    ) {
+    private AccountManager $manager;
+    private LicenseManager $licenseManager;
+    private AccountClient $client;
+
+    public function __construct(ClientConfig $config, AccountManager $manager, LicenseManager $licenseManager, AccountClient $client)
+    {
         parent::__construct($config);
+        $this->manager = $manager;
+        $this->licenseManager = $licenseManager;
+        $this->client = $client;
     }
 
     protected function getActionName(): string

@@ -73,7 +73,7 @@ class PremiumServiceProvider
     public function __construct(
         ClientConfig $config,
         string $pluginBasename,
-        ?EncryptorInterface $encryptor = null,
+        ?EncryptorInterface $encryptor = null
     ) {
         if ($pluginBasename === '') {
             throw new InvalidArgumentException('pluginBasename cannot be empty.');

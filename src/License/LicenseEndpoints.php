@@ -18,13 +18,16 @@ use VeronaLabs\WpPremiumSdk\Update\PluginUpdater;
  */
 class LicenseEndpoints extends AbstractAjaxEndpoint
 {
-    public function __construct(
-        ClientConfig $config,
-        private LicenseManager $manager,
-        private PluginUpdater $updater,
-        private FeatureInstaller $installer,
-    ) {
+    private LicenseManager $manager;
+    private PluginUpdater $updater;
+    private FeatureInstaller $installer;
+
+    public function __construct(ClientConfig $config, LicenseManager $manager, PluginUpdater $updater, FeatureInstaller $installer)
+    {
         parent::__construct($config);
+        $this->manager = $manager;
+        $this->updater = $updater;
+        $this->installer = $installer;
     }
 
     protected function getActionName(): string

@@ -20,12 +20,18 @@ use VeronaLabs\WpPremiumSdk\Store\PremiumStore;
  */
 class AccountManager
 {
-    public function __construct(
-        private ClientConfig $config,
-        private AccountClient $client,
-        private PremiumStore $store,
-        private EncryptorInterface $encryptor,
-    ) {}
+    private ClientConfig $config;
+    private AccountClient $client;
+    private PremiumStore $store;
+    private EncryptorInterface $encryptor;
+
+    public function __construct(ClientConfig $config, AccountClient $client, PremiumStore $store, EncryptorInterface $encryptor)
+    {
+        $this->config = $config;
+        $this->client = $client;
+        $this->store = $store;
+        $this->encryptor = $encryptor;
+    }
 
     /**
      * @return array{authorize_url: string, state: string}
