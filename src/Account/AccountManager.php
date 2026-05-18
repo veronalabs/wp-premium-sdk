@@ -41,9 +41,17 @@ class AccountManager
         $state = bin2hex(random_bytes(16));
         $this->store->setOAuthState($state);
 
+        // Always send Nexus a known-safe admin URL. The original page (which
+        // may include a React hash route like #/license) is tunneled through
+        // a `wps_return` query param that the callback handler unpacks.
+        $redirectUri = admin_url();
+        if ($returnUrl !== null && $returnUrl !== '') {
+            $redirectUri = add_query_arg('wps_return', rawurlencode($returnUrl), $redirectUri);
+        }
+
         $url = $this->config->apiBaseUrl().'/connect/'.$this->config->productSlug().'/authorize?'.http_build_query([
             'state' => $state,
-            'redirect_uri' => $returnUrl ?? admin_url(),
+            'redirect_uri' => $redirectUri,
         ]);
 
         return ['authorize_url' => $url, 'state' => $state];
@@ -67,10 +75,10 @@ class AccountManager
         }
 
         $user = $response['user'] ?? [];
-        $licenses = $response['licenses'] ?? [];
+        $accessToken = $response['access_token'];
 
         $this->storeSession([
-            'access_token' => $this->encryptor->encrypt($response['access_token']),
+            'access_token' => $this->encryptor->encrypt($accessToken),
             'refresh_token' => ! empty($response['refresh_token']) ? $this->encryptor->encrypt($response['refresh_token']) : null,
             'user' => [
                 'email' => $user['email'] ?? '',
@@ -79,14 +87,51 @@ class AccountManager
             'connected_at' => time(),
         ]);
 
-        // Auto-activate first license for this product if present
-        if (! empty($licenses[0]['license_key'])) {
-            try {
-                $licenseManager->activate($licenses[0]['license_key']);
-            } catch (Exception $e) {
-                // Leave unactivated; UI will prompt the user.
+        // Nexus's exchange-code response doesn't include licenses — fetch them
+        // separately so we can auto-activate (1 license) or surface a picker (2+).
+        $licenses = [];
+        try {
+            $licensesResponse = $this->client->licenses($accessToken);
+            $licenses = $licensesResponse['data'] ?? $licensesResponse['licenses'] ?? [];
+        } catch (Exception $e) {
+            $this->setFlashError(sprintf(
+                __('Could not fetch licenses from your account: %s', $this->config->textDomain()),
+                $e->getMessage()
+            ));
+
+            return ['connected' => true, 'licenses' => []];
+        }
+
+        $count = count($licenses);
+
+        if ($count === 0) {
+            $this->setFlashError(__('Your account has no licenses for this product.', $this->config->textDomain()));
+
+            return ['connected' => true, 'licenses' => []];
+        }
+
+        if ($count === 1) {
+            $key = $licenses[0]['license_key'] ?? '';
+
+            if ($key !== '') {
+                try {
+                    $licenseManager->activate($key);
+
+                    return ['connected' => true, 'licenses' => $licenses];
+                } catch (Exception $e) {
+                    // Activation failed (e.g., max_activations reached). Surface
+                    // the single license through the picker UI so the user can
+                    // see the error inline and retry / pick another site.
+                    $this->setPendingChoice($licenses);
+                    $this->setFlashError($e->getMessage());
+
+                    return ['connected' => true, 'licenses' => $licenses];
+                }
             }
         }
+
+        // 2+ licenses → let the user pick.
+        $this->setPendingChoice($licenses);
 
         return ['connected' => true, 'licenses' => $licenses];
     }
@@ -122,6 +167,58 @@ class AccountManager
         }
 
         $this->store->delete('account');
+    }
+
+    /**
+     * @return array<string, string>|null
+     */
+    public function getUser(): ?array
+    {
+        $session = $this->store->get('account');
+        $user = $session['user'] ?? null;
+
+        if (! is_array($user) || empty($user['email'])) {
+            return null;
+        }
+
+        return $user;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $licenses
+     */
+    public function setPendingChoice(array $licenses): void
+    {
+        $session = $this->store->get('account') ?? [];
+        $session['pending_choice'] = $licenses;
+        $this->store->set('account', $session);
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>|null
+     */
+    public function getPendingChoice(): ?array
+    {
+        $session = $this->store->get('account');
+        $choice = $session['pending_choice'] ?? null;
+
+        if (! is_array($choice) || $choice === []) {
+            return null;
+        }
+
+        return $choice;
+    }
+
+    public function clearPendingChoice(): void
+    {
+        $session = $this->store->get('account');
+
+        if (! is_array($session) || ! array_key_exists('pending_choice', $session)) {
+            return;
+        }
+
+        unset($session['pending_choice']);
+        $this->store->set('account', $session);
     }
 
     public function consumeFlashError(): ?string

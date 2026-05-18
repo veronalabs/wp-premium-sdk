@@ -51,7 +51,10 @@ class AccountEndpoints extends AbstractAjaxEndpoint
 
     protected function initOAuth(): void
     {
-        $this->successResponse($this->manager->getAuthorizeUrl());
+        $returnUrl = (string) Request::get('return_url', '');
+        $returnUrl = $returnUrl !== '' ? esc_url_raw($returnUrl) : '';
+
+        $this->successResponse($this->manager->getAuthorizeUrl($returnUrl !== '' ? $returnUrl : null));
     }
 
     protected function logout(): void
@@ -65,7 +68,7 @@ class AccountEndpoints extends AbstractAjaxEndpoint
         $this->successResponse([
             'logged_in' => $this->manager->isConnected(),
             'connected' => $this->manager->isConnected(),
-            'user' => null,
+            'user' => $this->manager->getUser(),
             'oauth_error' => $this->manager->consumeFlashError(),
         ]);
     }
@@ -109,6 +112,8 @@ class AccountEndpoints extends AbstractAjaxEndpoint
         }
 
         $data = $this->licenseManager->activate($licenseKey);
+
+        $this->manager->clearPendingChoice();
 
         $this->successResponse(['license' => $data]);
     }

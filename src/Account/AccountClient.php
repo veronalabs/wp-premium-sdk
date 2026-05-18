@@ -56,9 +56,23 @@ class AccountClient
      */
     public function licenses(string $accessToken): array
     {
-        return $this->http->get('/api/v1/account/licenses', [], [
+        $response = $this->http->get('/api/v1/account/licenses', [], [
             'Authorization' => 'Bearer '.$accessToken,
         ]);
+
+        // Nexus returns each license with field 'key'; the rest of the SDK + React
+        // consume 'license_key'. Normalize once here so downstream code is consistent.
+        if (isset($response['data']) && is_array($response['data'])) {
+            $response['data'] = array_map(static function ($license) {
+                if (is_array($license) && ! isset($license['license_key']) && isset($license['key'])) {
+                    $license['license_key'] = $license['key'];
+                }
+
+                return $license;
+            }, $response['data']);
+        }
+
+        return $response;
     }
 
     /**

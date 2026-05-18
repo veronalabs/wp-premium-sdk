@@ -55,8 +55,20 @@ class AccountBootstrap
             $this->manager->setFlashError($e->getMessage());
         }
 
-        // Redirect to a clean URL so the code/state don't linger.
-        wp_safe_redirect(remove_query_arg([$codeKey, $stateKey]));
+        // Prefer the explicit return URL passed via wps_return (rawurlencoded
+        // full URL, including any React hash route). Falls back to stripping
+        // the OAuth params from the current URL.
+        $target = '';
+        if (! empty($_GET['wps_return'])) {
+            $candidate = rawurldecode((string) wp_unslash($_GET['wps_return']));
+            $target = wp_validate_redirect($candidate, '');
+        }
+
+        if (! $target) {
+            $target = remove_query_arg([$codeKey, $stateKey, 'wps_return']);
+        }
+
+        wp_safe_redirect($target);
         exit;
     }
 }
