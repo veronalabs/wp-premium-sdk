@@ -59,7 +59,7 @@ class FeatureInstaller
      * Install many modules at once.
      *
      * @param  array<int, array{slug: string, url: string, hash?: string}>  $assets
-     * @return array{installed: string[], failed: array<string, string>}
+     * @return array{installed: string[], failed: array<int, array{slug: string, error: string}>}
      */
     public function installMany(array $assets): array
     {
@@ -71,7 +71,10 @@ class FeatureInstaller
                 $this->installSingle($asset);
                 $installed[] = $asset['slug'];
             } catch (Exception $e) {
-                $failed[$asset['slug'] ?? 'unknown'] = $e->getMessage();
+                $failed[] = [
+                    'slug' => $asset['slug'] ?? 'unknown',
+                    'error' => $e->getMessage(),
+                ];
             }
         }
 
