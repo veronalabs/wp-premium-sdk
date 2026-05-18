@@ -91,13 +91,31 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
     {
         $manifest = $this->updater->fetchManifest(true);
 
-        if (! $manifest) {
-            $this->successResponse(['update_available' => false]);
+        $baseUpdate = ['success' => true, 'update_available' => false];
 
-            return;
+        if ($manifest === null) {
+            $baseUpdate = [
+                'success' => false,
+                'update_available' => false,
+                'error' => __('Failed to fetch update manifest.', $this->config->textDomain()),
+            ];
+        } elseif (! empty($manifest['update_available'])) {
+            $inner = $manifest['manifest'] ?? [];
+            $baseUpdate = [
+                'success' => true,
+                'update_available' => true,
+                'version' => $inner['version'] ?? null,
+                'changelog' => $inner['changelog'] ?? null,
+            ];
+        } elseif (! empty($manifest['error'])) {
+            $baseUpdate['error'] = $manifest['error'];
         }
 
-        $this->successResponse($manifest);
+        $this->successResponse([
+            'feature_updates' => ['updates_available' => false, 'updates' => []],
+            'base_update' => $baseUpdate,
+            'checked_at' => time(),
+        ]);
     }
 
     /**
@@ -132,7 +150,11 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
         }
 
         $this->installer->installSingle($match);
-        $this->successResponse(['slug' => $slug, 'version' => $match['version'] ?? null]);
+        $this->successResponse([
+            'installed' => true,
+            'slug' => $slug,
+            'version' => $match['version'] ?? null,
+        ]);
     }
 
     protected function installFeatures(): void
@@ -141,6 +163,7 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
         $modules = $manifest['manifest']['modules'] ?? [];
 
         $result = $this->installer->installMany($modules);
+        $result['total'] = count($modules);
 
         $this->successResponse($result);
     }
