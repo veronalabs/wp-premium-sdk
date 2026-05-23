@@ -173,7 +173,10 @@ class LicenseManager
 
     public function hasFeature(string $slug): bool
     {
-        return in_array($slug, $this->getFeatures(), true);
+        $features = $this->getFeatures();
+
+        // A lone '*' (build-time "all modules" wildcard) entitles every module.
+        return in_array('*', $features, true) || in_array($slug, $features, true);
     }
 
     public function getLicenseKey(): ?string

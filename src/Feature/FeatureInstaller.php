@@ -82,6 +82,44 @@ class FeatureInstaller
     }
 
     /**
+     * Modules currently present on disk, as a slug => version map read from each
+     * module's manifest.json. Lets the dashboard mark licensed features as
+     * installed / not installed.
+     *
+     * @return array<string, string>
+     */
+    public function installedModules(): array
+    {
+        $modulesPath = $this->config->modulesPath();
+
+        if (! $modulesPath || ! is_dir($modulesPath)) {
+            return [];
+        }
+
+        $modules = [];
+
+        foreach (scandir($modulesPath) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $manifestFile = $modulesPath.'/'.$entry.'/manifest.json';
+
+            if (! is_file($manifestFile)) {
+                continue;
+            }
+
+            $manifest = json_decode((string) file_get_contents($manifestFile), true);
+
+            if (is_array($manifest) && ! empty($manifest['slug'])) {
+                $modules[(string) $manifest['slug']] = (string) ($manifest['version'] ?? '');
+            }
+        }
+
+        return $modules;
+    }
+
+    /**
      * Remove every installed module folder from the modules directory.
      *
      * @return array{removed: string[]}

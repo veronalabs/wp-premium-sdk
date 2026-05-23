@@ -84,6 +84,7 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
             'is_activated' => $this->manager->isActivated(),
             'is_valid' => $this->manager->isValid(),
             'license' => $this->manager->getLicenseData(),
+            'installed_features' => $this->installer->installedModules(),
         ]);
     }
 
