@@ -265,8 +265,30 @@ class LicenseManager
      */
     private function publicData(array $data): array
     {
+        if (! empty($data['license_key'])) {
+            try {
+                $data['license_key_masked'] = $this->maskKey($this->encryptor->decrypt($data['license_key']));
+            } catch (Exception $e) {
+                // Corrupt/unreadable key — omit the masked value rather than fail.
+            }
+        }
+
         unset($data['license_key']);
 
         return $data;
+    }
+
+    /**
+     * Mask a license key for display, revealing only the last four characters.
+     */
+    private function maskKey(string $key): string
+    {
+        $length = strlen($key);
+
+        if ($length <= 4) {
+            return str_repeat('•', $length);
+        }
+
+        return str_repeat('•', $length - 4).substr($key, -4);
     }
 }

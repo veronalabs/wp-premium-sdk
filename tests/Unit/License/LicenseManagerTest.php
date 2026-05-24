@@ -94,6 +94,18 @@ class LicenseManagerTest extends TestCase
         $this->assertSame('2027-01-01T00:00:00+00:00', $this->manager->getLicenseData()['expires_at']);
     }
 
+    public function test_get_license_data_exposes_masked_key_not_raw(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+
+        $data = $this->manager->getLicenseData();
+
+        $this->assertArrayNotHasKey('license_key', $data, 'Raw key must never reach the UI.');
+        $this->assertArrayHasKey('license_key_masked', $data);
+        $this->assertStringEndsWith('-001', $data['license_key_masked']);
+        $this->assertStringContainsString('•', $data['license_key_masked']);
+    }
+
     /**
      * Seed the cache via activate() (which makes an activate + a validate call).
      */
