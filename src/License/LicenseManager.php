@@ -123,6 +123,30 @@ class LicenseManager
         }
     }
 
+    /**
+     * Refresh the cached license status (status, expiry, features) from the
+     * server, WITHOUT the domain-activation check, so a server-side renewal or
+     * revocation is reflected on the next dashboard load. Updates the cache on
+     * success; leaves it untouched on failure (offline, transient, or the
+     * license is genuinely still invalid).
+     */
+    public function refreshStatus(): void
+    {
+        $licenseKey = $this->getLicenseKey();
+
+        if (! $licenseKey) {
+            return;
+        }
+
+        try {
+            $response = $this->client->validate($licenseKey, '');
+            $existing = $this->store->get('license');
+            $this->store->set('license', $this->mapApiResponse($response, $licenseKey, null, $existing));
+        } catch (Exception $e) {
+            // Keep the cached license; a failed refresh must not lock out a valid site.
+        }
+    }
+
     public function isActivated(): bool
     {
         $data = $this->store->get('license');

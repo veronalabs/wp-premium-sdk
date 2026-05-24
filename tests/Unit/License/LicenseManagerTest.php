@@ -56,4 +56,52 @@ class LicenseManagerTest extends TestCase
         $this->assertTrue($this->manager->hasFeature('entry-pages'));
         $this->assertTrue($this->manager->hasFeature('any-other-module'));
     }
+
+    public function test_refresh_status_pulls_renewed_expiry_from_server(): void
+    {
+        $this->activateWith('2020-01-01T00:00:00+00:00');
+
+        // Renewal happened on the server.
+        WpStub::queueJson(200, ['success' => true, 'license' => [
+            'status' => 'active',
+            'expires_at' => '2027-01-01T00:00:00+00:00',
+            'features' => ['entry-pages'],
+        ]]);
+
+        $this->manager->refreshStatus();
+
+        $this->assertSame('2027-01-01T00:00:00+00:00', $this->manager->getLicenseData()['expires_at']);
+    }
+
+    public function test_refresh_status_validates_without_a_domain(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        $this->manager->refreshStatus();
+
+        $lastBody = json_decode(WpStub::$requestLog[count(WpStub::$requestLog) - 1]['args']['body'], true);
+        $this->assertSame('', $lastBody['domain'] ?? 'MISSING');
+    }
+
+    public function test_refresh_status_keeps_cache_on_api_failure(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+
+        WpStub::queueError('Network down');
+        $this->manager->refreshStatus();
+
+        $this->assertSame('2027-01-01T00:00:00+00:00', $this->manager->getLicenseData()['expires_at']);
+    }
+
+    /**
+     * Seed the cache via activate() (which makes an activate + a validate call).
+     */
+    private function activateWith(string $expiresAt): void
+    {
+        $license = ['status' => 'active', 'expires_at' => $expiresAt, 'features' => ['entry-pages']];
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]);
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]);
+        $this->manager->activate('KEY-001');
+    }
 }

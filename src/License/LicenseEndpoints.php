@@ -80,6 +80,12 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
 
     protected function getStatus(): void
     {
+        // Re-check with the server on load so a renewal (or revocation) made on
+        // the server side is reflected, instead of trusting the local cache.
+        if ($this->manager->isActivated()) {
+            $this->manager->refreshStatus();
+        }
+
         $this->successResponse([
             'is_activated' => $this->manager->isActivated(),
             'is_valid' => $this->manager->isValid(),
