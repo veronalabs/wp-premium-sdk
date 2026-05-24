@@ -73,9 +73,15 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
 
     protected function deactivate(): void
     {
-        $cleanup = $this->manager->deactivateAndCleanup($this->updater::MANIFEST_CACHE_KEY_PREFIX.$this->config->productSlug());
+        // Deactivation only tears down the license and flushes the manifest
+        // cache — it never touches module files. Modules ship pre-packaged in
+        // the tier ZIP and are gated by what exists on disk, so deleting them
+        // on deactivate would be data loss. (`removed` is retained as an empty
+        // array for response-shape compatibility with the dashboard client.)
+        $this->manager->deactivate();
+        $this->updater->flush();
 
-        $this->successResponse(['removed' => $cleanup['removed']]);
+        $this->successResponse(['removed' => []]);
     }
 
     protected function getStatus(): void

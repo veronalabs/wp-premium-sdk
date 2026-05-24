@@ -46,6 +46,13 @@ class PluginUpdater
             return $transient;
         }
 
+        // Don't offer an update to a site whose license isn't currently valid
+        // (deactivated/expired) — fetchManifest() already short-circuits on an
+        // invalid license, but a stale manifest cache could still be injected.
+        if (! $this->license->isValid()) {
+            return $transient;
+        }
+
         $manifest = $this->fetchManifest();
 
         if (! $manifest || empty($manifest['update_available']) || empty($manifest['manifest']['plugin'])) {

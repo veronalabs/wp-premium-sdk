@@ -5,7 +5,6 @@ namespace VeronaLabs\WpPremiumSdk\Tests\Unit\License;
 use PHPUnit\Framework\TestCase;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Encryption\SodiumEncryptor;
-use VeronaLabs\WpPremiumSdk\Feature\FeatureInstaller;
 use VeronaLabs\WpPremiumSdk\Http\ApiClient;
 use VeronaLabs\WpPremiumSdk\License\LicenseClient;
 use VeronaLabs\WpPremiumSdk\License\LicenseManager;
@@ -37,7 +36,6 @@ class LicenseManagerTest extends TestCase
             new LicenseClient($config, new ApiClient($config)),
             $this->store,
             new SodiumEncryptor('wp_statistics_premium_cipher'),
-            new FeatureInstaller($config),
         );
     }
 

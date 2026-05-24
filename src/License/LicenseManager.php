@@ -4,7 +4,6 @@ namespace VeronaLabs\WpPremiumSdk\License;
 
 use Exception;
 use VeronaLabs\WpPremiumSdk\Encryption\EncryptorInterface;
-use VeronaLabs\WpPremiumSdk\Feature\FeatureInstaller;
 use VeronaLabs\WpPremiumSdk\Store\PremiumStore;
 use VeronaLabs\WpPremiumSdk\Support\Request;
 
@@ -20,14 +19,12 @@ class LicenseManager
     private LicenseClient $client;
     private PremiumStore $store;
     private EncryptorInterface $encryptor;
-    private FeatureInstaller $featureInstaller;
 
-    public function __construct(LicenseClient $client, PremiumStore $store, EncryptorInterface $encryptor, FeatureInstaller $featureInstaller)
+    public function __construct(LicenseClient $client, PremiumStore $store, EncryptorInterface $encryptor)
     {
         $this->client = $client;
         $this->store = $store;
         $this->encryptor = $encryptor;
-        $this->featureInstaller = $featureInstaller;
     }
 
     /**
@@ -74,20 +71,6 @@ class LicenseManager
         $this->store->delete('license');
 
         return true;
-    }
-
-    /**
-     * Full teardown: deactivate + remove installed modules + clear update cache.
-     *
-     * @return array{removed: string[]}
-     */
-    public function deactivateAndCleanup(string $updateCacheKey): array
-    {
-        $this->deactivate();
-        $cleanup = $this->featureInstaller->removeAll();
-        delete_transient($updateCacheKey);
-
-        return ['removed' => $cleanup['removed'] ?? []];
     }
 
     /**

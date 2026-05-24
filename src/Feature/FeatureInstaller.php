@@ -11,8 +11,7 @@ use WP_Error;
  *
  * Verifies SHA-256 hash before extraction. Installs into
  * ClientConfig::modulesPath()/{slug}/ so that ModuleLoader can discover them
- * at runtime via manifest.json. removeAll() is the teardown hook used when
- * a license is deactivated.
+ * at runtime via manifest.json.
  */
 class FeatureInstaller
 {
@@ -117,36 +116,6 @@ class FeatureInstaller
         }
 
         return $modules;
-    }
-
-    /**
-     * Remove every installed module folder from the modules directory.
-     *
-     * @return array{removed: string[]}
-     */
-    public function removeAll(): array
-    {
-        $modulesPath = $this->config->modulesPath();
-
-        if (! $modulesPath || ! is_dir($modulesPath)) {
-            return ['removed' => []];
-        }
-
-        $removed = [];
-
-        foreach (scandir($modulesPath) ?: [] as $entry) {
-            if ($entry === '.' || $entry === '..') {
-                continue;
-            }
-
-            $path = $modulesPath.'/'.$entry;
-
-            if (is_dir($path) && $this->deleteDirectory($path)) {
-                $removed[] = $entry;
-            }
-        }
-
-        return ['removed' => $removed];
     }
 
     /**

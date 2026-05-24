@@ -135,7 +135,7 @@ class PremiumServiceProvider
         $this->featureInstaller = new FeatureInstaller($this->config);
 
         $this->licenseClient = new LicenseClient($this->config, $this->http);
-        $this->licenseManager = new LicenseManager($this->licenseClient, $this->store, $this->encryptor, $this->featureInstaller);
+        $this->licenseManager = new LicenseManager($this->licenseClient, $this->store, $this->encryptor);
         $this->pluginUpdater = new PluginUpdater($this->config, $this->licenseClient, $this->licenseManager, $this->pluginBasename);
         $this->licenseEndpoints = new LicenseEndpoints($this->config, $this->licenseManager, $this->pluginUpdater, $this->featureInstaller);
         $this->licenseBootstrap = new LicenseBootstrap($this->config, $this->licenseEndpoints, $this->pluginUpdater);
