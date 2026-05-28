@@ -31,6 +31,13 @@ class WpStub
      */
     public static array $requestLog = [];
 
+    /**
+     * Registered filters, keyed by tag then priority.
+     *
+     * @var array<string, array<int, array<int, callable>>>
+     */
+    public static array $filters = [];
+
     public static function bootstrap(): void
     {
         if (defined('WP_PREMIUM_SDK_TESTS_BOOTSTRAPPED')) {
@@ -47,6 +54,7 @@ class WpStub
         self::$transients = [];
         self::$responseQueue = [];
         self::$requestLog = [];
+        self::$filters = [];
     }
 
     /**

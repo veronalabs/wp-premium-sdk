@@ -104,6 +104,56 @@ class LicenseManagerTest extends TestCase
         $this->assertStringContainsString('•', $data['license_key_masked']);
     }
 
+    public function test_activate_captures_tier_slug_from_response(): void
+    {
+        $license = ['status' => 'active', 'tier_slug' => 'pro', 'features' => [], 'expires_at' => '2027-01-01T00:00:00+00:00'];
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // activate
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // validate
+
+        $data = $this->manager->activate('KEY-001');
+
+        $this->assertSame('pro', $data['tier_slug'] ?? null, 'Public license data must expose the Nexus tier_slug.');
+        $this->assertSame('pro', $this->manager->getTier());
+    }
+
+    public function test_activation_gate_veto_throws_and_rolls_back(): void
+    {
+        $license = ['status' => 'active', 'tier_slug' => 'basic', 'features' => []];
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // activate
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // validate
+        WpStub::queueJson(200, ['success' => true]);                        // deactivate (rollback)
+
+        add_filter('wp_premium_sdk/activation_gate', static function ($error, array $licenseData) {
+            return ($licenseData['tier_slug'] ?? '') === 'basic' ? 'Tier too low for this build.' : $error;
+        }, 10, 2);
+
+        try {
+            $this->manager->activate('KEY-001');
+            $this->fail('Expected the activation gate to throw.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('Tier too low for this build.', $e->getMessage());
+        }
+
+        $this->assertNull($this->manager->getLicenseData(), 'A vetoed activation must not persist license data.');
+
+        $last = WpStub::$requestLog[count(WpStub::$requestLog) - 1];
+        $this->assertStringContainsString('/api/v1/license/deactivate', $last['url'], 'Veto must roll back the Nexus activation.');
+    }
+
+    public function test_activation_gate_allows_when_filter_returns_null(): void
+    {
+        $license = ['status' => 'active', 'tier_slug' => 'elite', 'features' => []];
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // activate
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // validate
+
+        add_filter('wp_premium_sdk/activation_gate', static fn ($error) => $error, 10, 2);
+
+        $data = $this->manager->activate('KEY-001');
+
+        $this->assertSame('elite', $data['tier_slug']);
+        $this->assertSame('elite', $this->manager->getTier());
+    }
+
     /**
      * Seed the cache via activate() (which makes an activate + a validate call).
      */

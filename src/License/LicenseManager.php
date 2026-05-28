@@ -47,6 +47,22 @@ class LicenseManager
         }
 
         $licenseData = $this->mapApiResponse($activateResponse, $licenseKey, $validateResponse);
+
+        // Generic veto seam: a host plugin can block activation (e.g. a license
+        // tier lower than the installed build) by returning a non-empty error
+        // string. Nexus already created the DomainActivation in client->activate()
+        // above, so roll it back before throwing to avoid orphaning the slot.
+        $gateError = apply_filters('wp_premium_sdk/activation_gate', null, $licenseData);
+        if (is_string($gateError) && $gateError !== '') {
+            try {
+                $this->client->deactivate($licenseKey, $domain);
+            } catch (Exception $e) {
+                // Best-effort rollback — surface the gate error regardless.
+            }
+
+            throw new \RuntimeException($gateError);
+        }
+
         $this->store->set('license', $licenseData);
 
         return $this->publicData($licenseData);
@@ -186,6 +202,18 @@ class LicenseManager
         return in_array('*', $features, true) || in_array($slug, $features, true);
     }
 
+    /**
+     * The licensed tier slug (e.g. 'basic', 'pro', 'elite') as reported by
+     * Nexus, or null when unknown. Drives tier display and build reconciliation
+     * on the host side.
+     */
+    public function getTier(): ?string
+    {
+        $tier = $this->store->get('license')['tier_slug'] ?? '';
+
+        return $tier !== '' ? $tier : null;
+    }
+
     public function getLicenseKey(): ?string
     {
         $data = $this->store->get('license');
@@ -226,11 +254,17 @@ class LicenseManager
         $licenseType = $license['license_type'] ?? $license['type'] ?? $response['type'] ?? '';
         $planName = $license['plan_name'] ?? ucfirst($licenseType);
 
+        // Nexus sends the entitled tier under tier_slug (at the license object or
+        // top level); fall back to the cached value so a refresh that omits it
+        // doesn't wipe the known tier.
+        $tierSlug = $license['tier_slug'] ?? $response['tier_slug'] ?? ($existing['tier_slug'] ?? '');
+
         return [
             'license_key' => $this->encryptor->encrypt($licenseKey),
             'status' => $license['status'] ?? 'active',
             'license_type' => $licenseType,
             'plan_name' => $planName,
+            'tier_slug' => $tierSlug,
             'expires_at' => $license['expires_at'] ?? $response['expires_at'] ?? '',
             'max_activations' => (int) ($license['max_activations'] ?? 0),
             'activation_count' => (int) ($license['activation_count'] ?? 0),

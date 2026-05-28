@@ -40,6 +40,35 @@ if (! function_exists('__')) {
     }
 }
 
+if (! function_exists('add_filter')) {
+    function add_filter(string $tag, callable $callback, int $priority = 10, int $acceptedArgs = 1): bool
+    {
+        WpStub::$filters[$tag][$priority][] = $callback;
+
+        return true;
+    }
+}
+
+if (! function_exists('apply_filters')) {
+    function apply_filters(string $tag, $value, ...$args)
+    {
+        if (empty(WpStub::$filters[$tag])) {
+            return $value;
+        }
+
+        $byPriority = WpStub::$filters[$tag];
+        ksort($byPriority);
+
+        foreach ($byPriority as $callbacks) {
+            foreach ($callbacks as $callback) {
+                $value = $callback($value, ...$args);
+            }
+        }
+
+        return $value;
+    }
+}
+
 if (! function_exists('esc_html')) {
     function esc_html(string $text): string
     {
