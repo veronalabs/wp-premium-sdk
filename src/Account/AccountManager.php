@@ -49,9 +49,18 @@ class AccountManager
             $redirectUri = add_query_arg('wps_return', rawurlencode($returnUrl), $redirectUri);
         }
 
+        // Tell Nexus which query-param names to use for the code/state it
+        // appends to redirect_uri on the way back. Nexus is multi-product, so
+        // each product carries its own namespaced params (this product's
+        // oauth_callback_params) instead of a hardcoded default — the callback
+        // handler reads the code/state under exactly these names.
+        $callbackParams = $this->config->oauthCallbackParams();
+
         $url = $this->config->apiBaseUrl().'/connect/'.$this->config->productSlug().'/authorize?'.http_build_query([
             'state' => $state,
             'redirect_uri' => $redirectUri,
+            'code_param' => $callbackParams['code'] ?? 'wps_oauth_code',
+            'state_param' => $callbackParams['state'] ?? 'wps_oauth_state',
         ]);
 
         return ['authorize_url' => $url, 'state' => $state];
