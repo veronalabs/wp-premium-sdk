@@ -4,6 +4,7 @@ namespace VeronaLabs\WpPremiumSdk\Http;
 
 use Exception;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
+use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 
 /**
  * Thin wp_remote_* wrapper for Nexus API calls.
@@ -103,11 +104,11 @@ class ApiClient
         $textDomain = $this->config->textDomain();
 
         if (is_wp_error($response)) {
-            throw new Exception(sprintf(
+            throw new ApiException(sprintf(
                 /* translators: %s: transport error message */
                 __('Nexus API request failed: %s', $textDomain),
                 $response->get_error_message()
-            ));
+            ), LicenseErrorCode::NETWORK_ERROR);
         }
 
         $code = wp_remote_retrieve_response_code($response);
@@ -115,12 +116,15 @@ class ApiClient
         $data = json_decode($body, true);
 
         if (! is_array($data)) {
-            throw new Exception(__('Invalid response from Nexus API.', $textDomain));
+            throw new ApiException(__('Invalid response from Nexus API.', $textDomain), LicenseErrorCode::INVALID_RESPONSE);
         }
 
         if ($code >= 400) {
+            // Prefer the server's machine-readable code; fall back to its raw
+            // message text (unchanged legacy behavior) when no code is present.
+            $errorCode = (string) ($data['error_code'] ?? $data['code'] ?? '');
             $message = $data['message'] ?? $data['error'] ?? __('Unknown API error.', $textDomain);
-            throw new Exception(esc_html($message));
+            throw new ApiException(esc_html($message), $errorCode);
         }
 
         return $data;

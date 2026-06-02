@@ -16,6 +16,11 @@ use VeronaLabs\WpPremiumSdk\Support\Request;
  */
 class LicenseManager
 {
+    /** Warn when a license expires within this many days. */
+    public const EXPIRY_WARNING_DAYS = 14;
+
+    private const SECONDS_PER_DAY = 86400;
+
     private LicenseClient $client;
     private PremiumStore $store;
     private EncryptorInterface $encryptor;
@@ -177,6 +182,103 @@ class LicenseManager
     }
 
     /**
+     * Classify the stored license into a single canonical state code, applying
+     * notice precedence and the expiry-warning threshold. Language-neutral: the
+     * host plugin maps the returned code to a translatable message under its own
+     * text domain (see LicenseErrorCode and docs/nexus-license-error-codes.md).
+     *
+     * Precedence (highest first): suspended/revoked/disabled > over_limit >
+     * expired > expiring_soon > not_activated > active. An unrecognized stored
+     * status falls through to "invalid". An empty expires_at is a lifetime
+     * license — never expiring or expired.
+     *
+     * `days_remaining` is ceil((expires_at - now) / day): null when there is no
+     * expiry, <= 0 once expired, otherwise the whole days left.
+     *
+     * @return array{code: string, days_remaining: int|null, raw_status: string}
+     */
+    public function classify(): array
+    {
+        $data = $this->store->get('license');
+
+        if (empty($data) || empty($data['license_key'])) {
+            return [
+                'code' => LicenseErrorCode::NOT_ACTIVATED,
+                'days_remaining' => null,
+                'raw_status' => '',
+            ];
+        }
+
+        $rawStatus = (string) ($data['status'] ?? '');
+        $expiresAt = (string) ($data['expires_at'] ?? '');
+        $maxActivations = (int) ($data['max_activations'] ?? 0);
+        $activationCount = (int) ($data['activation_count'] ?? 0);
+
+        $daysRemaining = null;
+        $expiredByDate = false;
+
+        if ($expiresAt !== '') {
+            $expiresTs = strtotime($expiresAt);
+
+            if ($expiresTs !== false) {
+                $diff = $expiresTs - time();
+                $daysRemaining = (int) ceil($diff / self::SECONDS_PER_DAY);
+                $expiredByDate = $diff <= 0;
+            }
+        }
+
+        return [
+            'code' => $this->resolveStateCode($rawStatus, $expiredByDate, $daysRemaining, $maxActivations, $activationCount),
+            'days_remaining' => $daysRemaining,
+            'raw_status' => $rawStatus,
+        ];
+    }
+
+    /**
+     * Apply notice precedence to the stored license signals and return the
+     * single winning state code.
+     */
+    private function resolveStateCode(string $rawStatus, bool $expiredByDate, ?int $daysRemaining, int $maxActivations, int $activationCount): string
+    {
+        // 1. Account-level holds — different action (contact support), so they
+        //    outrank everything else.
+        if ($rawStatus === LicenseErrorCode::SUSPENDED) {
+            return LicenseErrorCode::SUSPENDED;
+        }
+
+        if ($rawStatus === LicenseErrorCode::REVOKED) {
+            return LicenseErrorCode::REVOKED;
+        }
+
+        if ($rawStatus === LicenseErrorCode::DISABLED) {
+            return LicenseErrorCode::DISABLED;
+        }
+
+        // 2. No activation slots left — manage activations.
+        if ($maxActivations > 0 && $activationCount >= $maxActivations) {
+            return LicenseErrorCode::OVER_LIMIT;
+        }
+
+        // 3. Past expiry, whether reported by status or computed from the date.
+        if ($rawStatus === LicenseErrorCode::EXPIRED || $expiredByDate) {
+            return LicenseErrorCode::EXPIRED;
+        }
+
+        // 4. Approaching expiry.
+        if ($daysRemaining !== null && $daysRemaining > 0 && $daysRemaining <= self::EXPIRY_WARNING_DAYS) {
+            return LicenseErrorCode::EXPIRING_SOON;
+        }
+
+        // 5. Healthy — an activated license with no explicit status defaults to active.
+        if ($rawStatus === LicenseErrorCode::ACTIVE || $rawStatus === '') {
+            return LicenseErrorCode::ACTIVE;
+        }
+
+        // 6. Stored status present but unrecognized — safe catch-all.
+        return LicenseErrorCode::INVALID;
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function getLicenseData(): ?array
@@ -262,6 +364,10 @@ class LicenseManager
         return [
             'license_key' => $this->encryptor->encrypt($licenseKey),
             'status' => $license['status'] ?? 'active',
+            // Raw machine-readable code from Nexus, stored verbatim so an
+            // unrecognized value survives for classify()/display rather than
+            // being collapsed. Empty for the common "active" path.
+            'error_code' => (string) ($license['error_code'] ?? $response['error_code'] ?? ($existing['error_code'] ?? '')),
             'license_type' => $licenseType,
             'plan_name' => $planName,
             'tier_slug' => $tierSlug,
