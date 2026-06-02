@@ -5,6 +5,7 @@ namespace VeronaLabs\WpPremiumSdk\Endpoint;
 use Exception;
 use Throwable;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
+use VeronaLabs\WpPremiumSdk\Http\ApiException;
 
 /**
  * Base class for WP AJAX action dispatchers.
@@ -54,7 +55,11 @@ abstract class AbstractAjaxEndpoint
         try {
             $this->{$handlers[$subAction]}();
         } catch (Throwable $e) {
-            $this->errorResponse($e->getMessage(), $this->getErrorCode());
+            // Forward the specific, machine-readable code from an ApiException so
+            // the client can map it to a translatable message; fall back to the
+            // endpoint's generic code for any other throwable.
+            $code = $e instanceof ApiException ? $e->getErrorCode() : $this->getErrorCode();
+            $this->errorResponse($e->getMessage(), $code);
         }
     }
 

@@ -6,6 +6,8 @@ use Exception;
 use PHPUnit\Framework\TestCase;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Http\ApiClient;
+use VeronaLabs\WpPremiumSdk\Http\ApiException;
+use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\Tests\WpStub;
 
 class ApiClientTest extends TestCase
@@ -76,6 +78,68 @@ class ApiClientTest extends TestCase
         $this->expectExceptionMessage('Invalid license key');
 
         $this->http->get('/api/v1/thing');
+    }
+
+    public function test_surfaces_error_code_from_response_body(): void
+    {
+        WpStub::queueJson(422, ['error_code' => 'invalid_key', 'message' => 'Invalid license key']);
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::INVALID_KEY, $e->getErrorCode());
+            $this->assertSame('Invalid license key', $e->getMessage());
+        }
+    }
+
+    public function test_falls_back_to_legacy_code_field(): void
+    {
+        WpStub::queueJson(403, ['code' => 'domain_not_allowed', 'message' => 'Domain not allowed']);
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::DOMAIN_NOT_ALLOWED, $e->getErrorCode());
+        }
+    }
+
+    public function test_unknown_code_when_body_has_only_a_message(): void
+    {
+        WpStub::queueJson(422, ['message' => 'Something went wrong']);
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::UNKNOWN, $e->getErrorCode());
+            $this->assertSame('Something went wrong', $e->getMessage(), 'Legacy message fallback must be preserved.');
+        }
+    }
+
+    public function test_transport_failure_maps_to_network_error_code(): void
+    {
+        WpStub::queueError('Connection refused');
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::NETWORK_ERROR, $e->getErrorCode());
+        }
+    }
+
+    public function test_non_json_body_maps_to_invalid_response_code(): void
+    {
+        WpStub::$responseQueue[] = [200, '<html>not json</html>', []];
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::INVALID_RESPONSE, $e->getErrorCode());
+        }
     }
 
     public function test_disables_ssl_verify_for_local_tlds(): void
