@@ -296,6 +296,20 @@ class LicenseManager
         return $this->store->get('license')['features'] ?? [];
     }
 
+    /**
+     * The cached renewal offer block emitted by Nexus (state, days_remaining,
+     * renew_url with coupon pre-applied, offer, subscription_status), or null
+     * when the license has no renewal concept or none has been cached yet.
+     * Read-only cache access — the notice and refresh consumers never hit the
+     * network for this.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function getRenewal(): ?array
+    {
+        return $this->store->get('license')['renewal'] ?? null;
+    }
+
     public function hasFeature(string $slug): bool
     {
         $features = $this->getFeatures();
@@ -361,6 +375,11 @@ class LicenseManager
         // doesn't wipe the known tier.
         $tierSlug = $license['tier_slug'] ?? $response['tier_slug'] ?? ($existing['tier_slug'] ?? '');
 
+        // The renewal offer block (state, renew_url with coupon pre-applied,
+        // discount offer). Rides the validate-success response; fall back to the
+        // cached value so a refresh that omits it preserves a still-valid coupon.
+        $renewal = $license['renewal'] ?? $response['renewal'] ?? ($existing['renewal'] ?? null);
+
         return [
             'license_key' => $this->encryptor->encrypt($licenseKey),
             'status' => $license['status'] ?? 'active',
@@ -377,6 +396,7 @@ class LicenseManager
             'customer_name' => $license['customer_name'] ?? ($existing['customer_name'] ?? ''),
             'customer_email' => $license['customer_email'] ?? ($existing['customer_email'] ?? ''),
             'features' => $featureSlugs,
+            'renewal' => $renewal,
             'activated_at' => $existing['activated_at'] ?? time(),
             'last_validated_at' => time(),
         ];
