@@ -59,7 +59,17 @@ abstract class AbstractAjaxEndpoint
             // the client can map it to a translatable message; fall back to the
             // endpoint's generic code for any other throwable.
             $code = $e instanceof ApiException ? $e->getErrorCode() : $this->getErrorCode();
-            $this->errorResponse($e->getMessage(), $code);
+            // Pass through a `renewal` block Nexus attaches to the error (e.g. an
+            // expired key still carries the renewal coupon) so the UI can offer
+            // it even though the action failed.
+            $extra = [];
+            if ($e instanceof ApiException) {
+                $renewal = $e->getData()['renewal'] ?? null;
+                if (is_array($renewal)) {
+                    $extra['renewal'] = $renewal;
+                }
+            }
+            $this->errorResponse($e->getMessage(), $code, 400, $extra);
         }
     }
 
@@ -85,11 +95,15 @@ abstract class AbstractAjaxEndpoint
         wp_send_json_success($data);
     }
 
-    protected function errorResponse(string $message, string $code = 'error', int $status = 400): void
+    /**
+     * @param  array<string, mixed>  $extra  Additional keys merged into the error
+     *                                        payload (e.g. a `renewal` block).
+     */
+    protected function errorResponse(string $message, string $code = 'error', int $status = 400, array $extra = []): void
     {
-        wp_send_json_error([
+        wp_send_json_error(array_merge([
             'code' => $code,
             'message' => $message,
-        ], $status);
+        ], $extra), $status);
     }
 }
