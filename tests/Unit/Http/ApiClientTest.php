@@ -93,6 +93,36 @@ class ApiClientTest extends TestCase
         }
     }
 
+    public function test_error_exception_carries_renewal_block_from_body(): void
+    {
+        $renewal = [
+            'state'     => 'expired',
+            'renew_url' => 'https://nexus.test/checkout?coupon=RENEW-ABC',
+            'offer'     => ['code' => 'RENEW-ABC', 'discount_type' => 'percentage', 'discount_value' => 20],
+        ];
+        WpStub::queueJson(403, ['error_code' => 'license_expired', 'message' => 'License has expired', 'renewal' => $renewal]);
+
+        try {
+            $this->http->post('/api/v1/license/activate', ['license_key' => 'X']);
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame('license_expired', $e->getErrorCode());
+            $this->assertSame($renewal, $e->getData()['renewal'] ?? null, 'The renewal block must survive on the error so the UI can offer it.');
+        }
+    }
+
+    public function test_error_exception_has_empty_data_for_transport_failure(): void
+    {
+        WpStub::queueError('Connection refused');
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame([], $e->getData());
+        }
+    }
+
     public function test_falls_back_to_legacy_code_field(): void
     {
         WpStub::queueJson(403, ['code' => 'domain_not_allowed', 'message' => 'Domain not allowed']);

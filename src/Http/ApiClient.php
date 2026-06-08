@@ -124,7 +124,9 @@ class ApiClient
             // message text (unchanged legacy behavior) when no code is present.
             $errorCode = (string) ($data['error_code'] ?? $data['code'] ?? '');
             $message = $data['message'] ?? $data['error'] ?? __('Unknown API error.', $textDomain);
-            throw new ApiException(esc_html($message), $errorCode);
+            // Carry the full body so callers can read extras (e.g. a `renewal`
+            // block Nexus attaches to an expired-license error).
+            throw new ApiException(esc_html($message), $errorCode, $data);
         }
 
         return $data;

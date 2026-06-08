@@ -92,6 +92,55 @@ class LicenseManagerTest extends TestCase
         $this->assertSame('2027-01-01T00:00:00+00:00', $this->manager->getLicenseData()['expires_at']);
     }
 
+    public function test_activate_captures_renewal_block_from_response(): void
+    {
+        $renewal = [
+            'subscription_status' => 'active',
+            'renews_at' => '2027-01-01T00:00:00+00:00',
+            'days_remaining' => 5,
+            'state' => 'expiring_soon',
+            'renew_url' => 'https://nexus.test/checkout?coupon=RENEW-1',
+            'offer' => ['code' => 'RENEW-1', 'discount_type' => 'percentage', 'discount_value' => 20],
+        ];
+        $license = ['status' => 'active', 'features' => [], 'expires_at' => '2027-01-01T00:00:00+00:00', 'renewal' => $renewal];
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // activate
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // validate
+
+        $data = $this->manager->activate('KEY-001');
+
+        $this->assertSame($renewal, $data['renewal'], 'Public license data must expose the renewal block.');
+        $this->assertSame($renewal, $this->manager->getRenewal());
+    }
+
+    public function test_get_renewal_is_null_when_none_cached(): void
+    {
+        $this->store->set('license', ['license_key' => 'enc', 'status' => 'active']);
+
+        $this->assertNull($this->manager->getRenewal());
+    }
+
+    public function test_refresh_without_renewal_preserves_cached_offer(): void
+    {
+        $renewal = [
+            'subscription_status' => 'active',
+            'renews_at' => '2027-01-01T00:00:00+00:00',
+            'days_remaining' => 5,
+            'state' => 'expiring_soon',
+            'renew_url' => 'https://nexus.test/checkout?coupon=RENEW-1',
+            'offer' => ['code' => 'RENEW-1', 'discount_type' => 'percentage', 'discount_value' => 20],
+        ];
+        $license = ['status' => 'active', 'features' => [], 'expires_at' => '2027-01-01T00:00:00+00:00', 'renewal' => $renewal];
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // activate
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // validate
+        $this->manager->activate('KEY-001');
+
+        // A later background refresh omits the renewal block entirely.
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active', 'expires_at' => '2027-01-01T00:00:00+00:00']]);
+        $this->manager->refreshStatus();
+
+        $this->assertSame($renewal, $this->manager->getRenewal(), 'A refresh that omits renewal must keep the cached coupon.');
+    }
+
     public function test_get_license_data_exposes_masked_key_not_raw(): void
     {
         $this->activateWith('2027-01-01T00:00:00+00:00');

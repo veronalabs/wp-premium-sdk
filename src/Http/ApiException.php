@@ -18,11 +18,21 @@ class ApiException extends Exception
 {
     private string $errorCode;
 
-    public function __construct(string $message, string $errorCode = LicenseErrorCode::UNKNOWN, int $code = 0, ?Throwable $previous = null)
+    /** @var array<string, mixed> */
+    private array $data;
+
+    /**
+     * @param  array<string, mixed>  $data  The parsed error response body, so
+     *                                       callers can read extras like the
+     *                                       `renewal` block on an expired-license
+     *                                       failure. Empty for transport errors.
+     */
+    public function __construct(string $message, string $errorCode = LicenseErrorCode::UNKNOWN, array $data = [], int $code = 0, ?Throwable $previous = null)
     {
         parent::__construct($message, $code, $previous);
 
         $this->errorCode = $errorCode !== '' ? $errorCode : LicenseErrorCode::UNKNOWN;
+        $this->data = $data;
     }
 
     /**
@@ -31,5 +41,15 @@ class ApiException extends Exception
     public function getErrorCode(): string
     {
         return $this->errorCode;
+    }
+
+    /**
+     * The parsed error response body from Nexus (empty for transport errors).
+     *
+     * @return array<string, mixed>
+     */
+    public function getData(): array
+    {
+        return $this->data;
     }
 }
