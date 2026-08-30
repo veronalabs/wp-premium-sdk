@@ -123,7 +123,35 @@ if (! function_exists('add_query_arg')) {
 if (! function_exists('home_url')) {
     function home_url(string $path = ''): string
     {
-        return 'https://example.com'.$path;
+        return WpStub::$homeUrl.$path;
+    }
+}
+
+if (! function_exists('network_home_url')) {
+    function network_home_url(string $path = ''): string
+    {
+        return WpStub::$networkHomeUrl.$path;
+    }
+}
+
+if (! function_exists('is_multisite')) {
+    function is_multisite(): bool
+    {
+        return WpStub::$isMultisite;
+    }
+}
+
+if (! function_exists('is_plugin_active_for_network')) {
+    function is_plugin_active_for_network(string $plugin): bool
+    {
+        return in_array($plugin, WpStub::$networkActivatedPlugins, true);
+    }
+}
+
+if (! function_exists('get_plugins')) {
+    function get_plugins(): array
+    {
+        return [];
     }
 }
 

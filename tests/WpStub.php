@@ -14,6 +14,18 @@ class WpStub
     /** @var array<string, mixed> */
     public static array $options = [];
 
+    /** The address `home_url()` answers with. */
+    public static string $homeUrl = 'https://example.com';
+
+    /** The address `network_home_url()` answers with. */
+    public static string $networkHomeUrl = 'https://example.com';
+
+    /** Whether this install is a network at all. */
+    public static bool $isMultisite = false;
+
+    /** Plugin files activated across the whole network. */
+    public static array $networkActivatedPlugins = [];
+
     /** @var array<string, mixed> */
     public static array $transients = [];
 
@@ -55,6 +67,10 @@ class WpStub
         self::$responseQueue = [];
         self::$requestLog = [];
         self::$filters = [];
+        self::$homeUrl = 'https://example.com';
+        self::$networkHomeUrl = 'https://example.com';
+        self::$isMultisite = false;
+        self::$networkActivatedPlugins = [];
     }
 
     /**
