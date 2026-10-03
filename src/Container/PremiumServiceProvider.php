@@ -172,6 +172,7 @@ class PremiumServiceProvider
         if (is_multisite()) {
             delete_site_option($this->networkLicense->optionKey());
             delete_site_option($this->networkLicense->cipherOptionKey());
+            delete_site_option($this->networkLicense->newSitesOptionKey());
         }
 
         $this->store->resetCache();

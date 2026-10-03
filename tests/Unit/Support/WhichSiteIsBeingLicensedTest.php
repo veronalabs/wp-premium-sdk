@@ -127,8 +127,20 @@ final class WhichSiteIsBeingLicensedTest extends TestCase
     {
         self::assertSame('example.com/site1', Request::normaliseDomain('HTTPS://www.Example.com:443/site1/'));
         self::assertSame('example.com', Request::normaliseDomain('example.com.'));
-        self::assertSame('example.com:8080', Request::normaliseDomain('http://example.com:8080'));
+        self::assertSame('example.com', Request::normaliseDomain('http://example.com:8080'));
         self::assertNotSame(Request::normaliseDomain('example.com/site1'), Request::normaliseDomain('example.com/site2'));
+    }
+
+    /**
+     * currentDomain() drops the port, so comparing must too, or a site on
+     * `localhost:8890` never matches the domain it activated with (#25).
+     */
+    public function test_a_site_on_a_port_compares_equal_to_the_domain_it_activated_with(): void
+    {
+        WpStub::$homeUrl = 'http://localhost:8890/alpha';
+
+        self::assertSame('localhost/alpha', Request::currentDomain());
+        self::assertSame(Request::currentDomain(), Request::normaliseDomain(WpStub::$homeUrl));
     }
 
     /**

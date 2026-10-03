@@ -395,11 +395,82 @@ class NetworkLicenseTest extends TestCase
     public function test_uninstall_also_removes_the_network_key(): void
     {
         $this->provider()->networkLicense()->setKey('NET-KEY-0021');
+        $this->provider()->networkLicense()->rememberNewSite(3);
 
         $this->provider()->uninstall(false);
 
         $this->assertArrayNotHasKey(self::NETWORK_OPTION, WpStub::$siteOptions);
         $this->assertArrayNotHasKey(self::NETWORK_OPTION.'_cipher', WpStub::$siteOptions);
+        $this->assertArrayNotHasKey(self::NETWORK_OPTION.'_new_sites', WpStub::$siteOptions);
+    }
+
+    public function test_a_subsite_with_its_own_key_is_not_waiting_for_a_seat(): void
+    {
+        $this->ownKeyOnBlog3();
+        $this->networkKey('NET-KEY-0022', 3, 1);
+
+        $data = $this->ajax($this->provider(), 'network_license', 'get_status')['data'];
+
+        $this->assertSame(1, $data['subsites_active']);
+        $this->assertSame(1, $data['subsites_own_key']);
+        $this->assertSame(1, $data['subsites_waiting'], 'Only shop.example.com waits.');
+        $this->assertTrue($data['subsites'][2]['has_own_key']);
+        $this->assertFalse($data['subsites'][2]['holds_seat']);
+        $this->assertFalse($data['subsites'][1]['has_own_key']);
+    }
+
+    public function test_activate_all_leaves_a_subsites_own_key_alone(): void
+    {
+        $this->ownKeyOnBlog3();
+        $this->networkKey('NET-KEY-0023', 2, 1);
+        $this->queueActivation();
+
+        $response = $this->ajax($this->provider(), 'network_license', 'activate_all');
+
+        $this->assertTrue($response['success'], 'One seat left covers the one subsite truly waiting.');
+        $this->assertSame([2], array_column($response['data']['results'], 'blog_id'));
+        $this->assertSame(KeySource::MANUAL, WpStub::$blogOptions[3][SdkFixture::OPTION]['license']['source']);
+    }
+
+    public function test_activate_sites_skips_a_subsite_with_its_own_key(): void
+    {
+        $this->ownKeyOnBlog3();
+        $this->networkKey('NET-KEY-0024', 5, 1);
+
+        $response = $this->ajax($this->provider(), 'network_license', 'activate_sites', ['blog_ids' => ['3']]);
+
+        $this->assertTrue($response['success']);
+        $this->assertSame([], $response['data']['results']);
+        $this->assertSame([], WpStub::$requestLog);
+    }
+
+    public function test_a_subsite_keeps_its_own_key_on_its_next_admin_load(): void
+    {
+        $this->ownKeyOnBlog3();
+        $this->networkKey('NET-KEY-0025', 5, 1);
+
+        WpStub::switchBlog(3);
+        $sdk = $this->provider();
+        $sdk->autoActivator()->run();
+
+        $this->assertSame([], WpStub::$requestLog);
+        $this->assertSame('OWN-KEY-0003', $sdk->licenseManager()->getLicenseKey());
+        $this->assertSame(KeySource::MANUAL, $sdk->licenseManager()->getSource());
+    }
+
+    /**
+     * Blog 3 activates a key of its own while the plugin is still activated site by
+     * site; then the plugin is network-activated and the main site is current again.
+     */
+    private function ownKeyOnBlog3(): void
+    {
+        WpStub::$networkActivatedPlugins = [];
+        WpStub::switchBlog(3);
+        $this->queueActivation();
+        $this->assertTrue($this->ajax($this->provider(), 'license', 'activate', ['license_key' => 'OWN-KEY-0003'])['success']);
+        WpStub::switchBlog(1);
+        WpStub::$networkActivatedPlugins = [SdkFixture::PLUGIN];
+        WpStub::$requestLog = [];
     }
 
     /**

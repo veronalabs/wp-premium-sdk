@@ -106,7 +106,8 @@ class NetworkLicenseEndpoints extends AbstractAjaxEndpoint
     }
 
     /**
-     * Activate every subsite still waiting for a seat. Refused with
+     * Activate every subsite still waiting for a seat. A subsite activated with a key
+     * of its own is not waiting and keeps that key. Refused with
      * `not_enough_seats` (carrying `needed` and `left`) when the license cannot cover
      * them all, so no subsite gets a seat by accident of order.
      *
@@ -114,20 +115,13 @@ class NetworkLicenseEndpoints extends AbstractAjaxEndpoint
      */
     protected function activateAll(): void
     {
-        $waiting = [];
-
-        foreach ($this->network->subsites(self::SUBSITE_LIMIT) as $subsite) {
-            if (! $subsite['holds_seat']) {
-                $waiting[] = $subsite['blog_id'];
-            }
-        }
-
-        $this->activateBlogs($waiting);
+        $this->activateBlogs(NetworkLicense::waitingBlogIds($this->network->subsites(self::SUBSITE_LIMIT)));
     }
 
     /**
-     * Body: `blog_ids` (array, or comma-separated). Activate just those subsites.
-     * Refused with `not_enough_seats` when they need more seats than are left.
+     * Body: `blog_ids` (array, or comma-separated). Activate just those subsites,
+     * skipping any that is not waiting for a seat (already holding one, or activated
+     * with a key of its own). Refused with `not_enough_seats` when they need more seats than are left.
      *
      * @throws Exception
      */
@@ -139,14 +133,7 @@ class NetworkLicenseEndpoints extends AbstractAjaxEndpoint
             $raw = explode(',', (string) Request::get('blog_ids', ''));
         }
 
-        $known = [];
-
-        foreach ($this->network->subsites(self::SUBSITE_LIMIT) as $subsite) {
-            if (! $subsite['holds_seat']) {
-                $known[] = $subsite['blog_id'];
-            }
-        }
-
+        $known = NetworkLicense::waitingBlogIds($this->network->subsites(self::SUBSITE_LIMIT));
         $ids = array_values(array_intersect($known, array_map('intval', $raw)));
 
         $this->activateBlogs($ids);

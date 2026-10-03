@@ -45,6 +45,12 @@ All notable changes to this package are documented here. The format follows
 - `LicenseEndpoints` and `LicenseBootstrap` take the new services in their constructors; `PremiumServiceProvider` wires them. `AbstractAjaxEndpoint` gains `requiredCapability()`. `LicenseManager::releaseSeat()` is public.
 - README: fixed the non-existent `deactivateAndCleanup()` and `removeAll()` examples, documented `uninstall()`, the sign-in flow, the new sub-actions and the full data model. (#21)
 
+### Fixed
+
+- On a network, a subsite activated with a key of its own before the plugin was network-activated keeps it. `activate_all`, `activate_sites` and the subsite's own admin load no longer replace it with the network key (which left its seat on the old key taken), and it no longer counts as waiting. The network `get_status` reports `has_own_key` per subsite and `subsites_own_key` in the seat summary. (#24)
+- `Request::normaliseDomain()` drops any port, not just `:80` and `:443`, matching `currentDomain()`. A network subsite on a site served on a port (e.g. `localhost:8890`) now counts as holding the seat it activated. (#25)
+- `PremiumServiceProvider::uninstall()` also deletes the network's new-sites list (`{option_key}_network_new_sites`). (#26)
+
 ### Deprecated
 
 - `Request::useNetworkLicenceFor()` does nothing and will be removed in a later release. (#7)
