@@ -106,6 +106,8 @@ After `register()`:
 |---|---|---|
 | `ajax_action` | `product_slug` | AJAX hook prefix. Actions become `wp_ajax_{prefix}_license`, `wp_ajax_{prefix}_account`. |
 | `modules_path` | `''` | Absolute path to `pro/modules/`. Required for `ModuleLoader` / `FeatureInstaller`. |
+| `license_key_constant` | `''` | Name of a wp-config constant that may hold the license key, e.g. `WP_STATISTICS_LICENSE_KEY`. See [Managed keys](#managed-keys). |
+| `installed_tier` | `''` | Tier of the build that is installed (`basic`, `pro` …). Needed for `tier_mismatch` and `install_tier_package`. |
 
 ---
 
@@ -132,6 +134,10 @@ $sdk = new PremiumServiceProvider(
 | `featureInstaller()` | `FeatureInstaller` — ZIP download + extract. |
 | `moduleLoader()` | `ModuleLoader` — runtime module discovery. |
 | `store()` | `PremiumStore` — low-level section storage. |
+| `keySource()` | `KeySource` — where the key comes from (`constant`, `network`, `manual`). |
+| `networkLicense()` | `NetworkLicense` — the network-wide key of a network-activated plugin. |
+| `autoActivator()` | `AutoActivator` — activates with a constant or network key on `admin_init`. |
+| `tierPackageInstaller()` | `TierPackageInstaller` — installs the licensed tier's package. |
 | `register()` | Hooks everything into WordPress. Call once per request. |
 | `uninstall(bool $releaseSeat = true)` | Releases this site's seat and deletes everything the SDK stored. For the host's `uninstall.php`. |
 
@@ -152,7 +158,7 @@ $sdk    = new PremiumServiceProvider($config, 'my-plugin/my-plugin.php');
 $sdk->uninstall(); // or uninstall(false) to keep the seat on the account
 ```
 
-It first tells Nexus this site no longer uses its seat — best-effort, with a 5-second timeout, never throwing — then deletes the option row (license + account), the `{option_key}_cipher` fallback key, and the manifest cache and failure-backoff site transients. It returns `['removed_remotely' => bool, 'error_code' => ?string]`.
+It first tells Nexus this site no longer uses its seat — best-effort, with a 5-second timeout, never throwing — then deletes the option row (license + account), the `{option_key}_cipher` fallback key, and the manifest cache and failure-backoff site transients. On a multisite it also deletes the network key (`{option_key}_network`) and its `{option_key}_network_cipher` fallback key. It returns `['removed_remotely' => bool, 'error_code' => ?string]`.
 
 OAuth `state` transients cannot be listed through the WordPress API; they expire on their own within 10 minutes.
 
@@ -167,7 +173,7 @@ On a network, run it once per site inside `switch_to_blog()`, building a new pro
 ```php
 $license = $sdk->licenseManager();
 
-$license->activate('KEY-ABCD-1234'); // → public-safe license data array
+$license->activate('KEY-ABCD-1234'); // → public-safe license data array (refused while the key is managed elsewhere)
 $license->validate();                // → bool (re-checks with Nexus, with this site's domain)
 $license->refreshStatus();           // re-reads status/expiry from Nexus, no domain check
 $license->deactivate();              // → ['removed_remotely' => bool, 'error_code' => ?string]
@@ -185,6 +191,10 @@ $license->getLicenseKey();           // decrypted raw key — internal use only
 $license->refreshSites();            // → bool; fetches the site list (validate with this site's domain)
 $license->listSites();               // cached sites, each with this_site
 $license->removeSite('other.com');   // releases another site's seat, then refreshes the list
+
+$license->getSource();               // 'manual' | 'constant' | 'network' | null
+$license->domainChange();            // ['was' => 'example.com', 'now' => 'staging.example.com'] | null
+$license->moveLicense();             // activate here, then release the old domain (see move_license)
 ```
 
 Keys are encrypted via the injected `EncryptorInterface` before storage and decrypted on read.
@@ -194,6 +204,8 @@ Keys are encrypted via the injected `EncryptorInterface` before storage and decr
 A failed check keeps the cached license only when the failure says nothing about the license (network down, server error, unreadable reply, rate limited). When Nexus refuses the key — expired, suspended, revoked, disabled, invalid, wrong product — the refusal is stored and `isValid()` stops passing. See [docs/nexus-license-error-codes.md](docs/nexus-license-error-codes.md).
 
 The `wp_premium_sdk/activation_gate` filter can veto an activation by returning an error string. The SDK then hands the seat back and throws `ActivationVetoedException` (a `RuntimeException`) whose `removedRemotely()` / `rollbackErrorCode()` say whether that worked.
+
+`activate()` stores `activated_domain`, the normalised domain it activated. When `home_url()` later normalises to something else — a staging copy cloned from production, or a site moved to a new address — `domainChange()` reports both. `moveLicense()` activates the current domain first and releases the old one only once that worked. Whether the new domain uses a seat is Nexus's call (`license.site.is_counted` in the activate reply); by default the old domain is released only when the new one is counted, so a development copy never cuts production off.
 
 ### `AccountManager`
 
@@ -219,6 +231,10 @@ The sign-in is a one-time step, not a stored connection:
 4. `AccountBootstrap::handleOAuthCallback()` detects the params on `admin_init` and exchanges the code for a token. With one license it activates it straight away; with several it stores them as a pending choice for the picker.
 5. Once a license is activated (here or through `activate_license`), the token is revoked on Nexus (best-effort, 5-second timeout, never failing the activation) and the session — token, user, pending choice, flash error — is deleted. From then on everything runs on the license key.
 
+Every way out of the picker deletes the session: activating a license by any path (the provider hooks `endSignIn()` to `LicenseManager::onActivated()`, so a key typed on the license page, a wp-config constant or a network key ends it too), signing out, and the session passing its `expires_at` — checked on every read, so an abandoned picker stops counting without waiting for a 401.
+
+The exchange sends `device_name` (this site's domain). The session stores `user_id`, the WordPress user who started it; only that user sees it. Any other admin gets `connected: false` and no user from `get_status` (the normal activation screen), and `fetch_licenses`, `activate_license` and `logout` answer `sign_in_other_user`.
+
 No refresh token is stored. The session lapses on its own after the token lifetime (Nexus's `expires_in`/`expires_at`, else 24 hours). If Nexus answers 401 or `token_expired` during the picker, the session is cleared and the action fails with `account_expired`, so the UI can ask the user to sign in again.
 
 ### `PluginUpdater`
@@ -230,6 +246,8 @@ $manifest = $updater->fetchManifest();           // array — cached ~12h
 $manifest = $updater->fetchManifest(force: true); // bypass cache and backoff
 $updater->flush();                                // invalidate cache and backoff
 ```
+
+On a network-activated plugin the check is network-wide, like the plugin files and the update transient: it uses the network (or wp-config) key and counts as licensed when the main site's activation is valid, whichever subsite triggers it. A subsite without a seat cannot make the update disappear for the network. Single sites and plugins activated site by site use their own license as before.
 
 A failed fetch is remembered too: the next attempt waits 1h, then 3h, 6h and at most 12h while failures continue (longer when the server sends `Retry-After`), so a refused or unreachable site does not ask on every update check.
 
@@ -309,6 +327,39 @@ $store->verifyOAuthState('random'); // one-time consume
 
 ---
 
+## Managed keys
+
+### From a wp-config constant
+
+Agencies setting up many sites can put the key in wp-config instead of visiting each license page:
+
+```php
+// The host passes the constant's name:
+new ClientConfig([/* … */ 'license_key_constant' => 'WP_STATISTICS_LICENSE_KEY']);
+
+// wp-config.php on each site:
+define('WP_STATISTICS_LICENSE_KEY', 'XXXX-XXXX-XXXX-XXXX');
+```
+
+On `admin_init`, when the constant is defined and the site has no license, a different key, or a license activated on another domain, the SDK activates the constant's key. A failure waits 1 hour, then 6 hours, then 24 hours between tries (longer when Nexus sends `Retry-After`); a new key starts over. `get_status` reports `source: "constant"` and the last failure as `auto_activation: {attempts, last_attempt_at, retry_at, error_code, source}`. `activate` and `deactivate` refuse with `key_from_constant`. Deleting the constant removes the license on the next admin load and releases the seat. The key is never logged, echoed or kept in the retry record.
+
+### On a network-activated plugin
+
+Every subsite still counts as its own site (see [Which site is licensed](#which-site-is-licensed)); what changes is that the network admin enters the key once:
+
+- The key is stored network-wide in the site option `{option_key}_network`, encrypted. Salts are shared across a network, so every subsite can read it; without salts the fallback cipher key lives in the site option `{option_key}_network_cipher`.
+- Each subsite activates on its own `home_url()` with its own seat and keeps its activation in its own option row.
+- **Seats are not handed out in visit order.** A subsite activates itself on admin load only when the license has a free seat for every subsite still waiting (or is unlimited), or — for a subsite created after the key was entered (`wp_initialize_site`) — while any seat is left. While nobody knows the seat count yet, only the main site tries. Otherwise nothing happens on its own: the network admin chooses with `activate_all` or `activate_sites`.
+- Subsite license pages are view-only and carry no seat notice: `get_status` reports `context: "network"`, `is_network_managed: true` and `auto_activation: null`; an unseated subsite is simply `not_activated`. `activate`, `deactivate`, `remove_site` and `move_license` refuse with `network_managed`. The shortfall is shown in Network Admin only.
+- Updates are network-wide: see [`PluginUpdater`](#pluginupdater).
+- Migration: when the plugin becomes network-activated and no network key exists yet, the main site's stored key is adopted (on the main site or in Network Admin).
+- When the network admin removes the key, the main site's license goes at once and each other subsite's on its next admin load, releasing its seat. When the plugin is network-deactivated instead, subsites keep their licenses as their own.
+- A wp-config constant still wins over the network key.
+
+The host's Network Admin page talks to `wp_ajax_{prefix}_network_license` (below).
+
+---
+
 ## AJAX endpoints
 
 ### License (`wp_ajax_{prefix}_license`)
@@ -319,9 +370,11 @@ POST `sub_action` values:
 |---|---|
 | `activate` | Body: `license_key`. Activates + stores. |
 | `deactivate` | Removes the local license (modules stay). Returns `removed: []`, `removed_remotely`, `error_code`. |
-| `get_status` | Refreshes from Nexus, then returns `is_activated`, `is_valid`, `license` snapshot, `state` (the `classify()` result), `installed_features`. |
+| `get_status` | Refreshes from Nexus, then returns `is_activated`, `is_valid`, `license` snapshot, `state` (the `classify()` result), `installed_features`, `source` (`manual` / `constant` / `network`), `auto_activation` (last failed automatic activation or null; always null on a network-managed subsite), `context` (`site` / `network`), `is_network_managed`, `domain_changed` (`{was, now}` or null) and `tier_mismatch` (`{installed, licensed}` from the cached manifest, or null). |
 | `list_sites` | Fetches the license's sites from Nexus (cached list when it can't be reached, `fresh: false`). Returns `sites` (each with `this_site`), `max_activations`, `activation_count`, `manage_url`. |
 | `remove_site` | Body: `domain`. Releases that site's seat with this site's license key, then returns the refreshed `sites`. This site is refused with code `this_site` — use `deactivate`. |
+| `move_license` | Activates the current domain, then releases the old one (see `domain_changed`). Optional body `release_old` (`1`/`0`) overrides the default, which releases only when Nexus counts the new domain. Returns `activated: {domain, is_counted}`, `released: {domain, attempted, removed_remotely, error_code}`, `license`. A failed activation is an error and leaves the old domain's seat alone. Refused with `domain_unchanged` when there is nothing to move. |
+| `install_tier_package` | Needs `install_plugins` too. Fetches the manifest fresh (without `current_version`, so the package comes back even when the version is current); when its `tier_slug` differs from `installed_tier`, installs its package over the plugin with `Plugin_Upgrader`, then clears the cached manifest. Returns `installed`, `installed_tier`, `licensed_tier`, `version`, `plugin_file`. Errors: `file_mods_disabled`, `filesystem_credentials_needed` (never prompts), `installed_tier_unknown`, `licensed_tier_unknown`, `package_unavailable`, `install_failed`, `rate_limited` (while a server-requested wait runs) or Nexus's code. |
 | `check_updates` | Forces a manifest fetch and returns it. |
 | `update_feature` | Body: `slug`. Installs the latest version of one licensed module. |
 | `install_features` | Installs **all** licensed modules from the latest manifest. |
@@ -330,6 +383,20 @@ Every call requires an `_ajax_nonce` of `{ajax_action}_license` and the WP capab
 
 Errors answer `{code, message}` with HTTP 400, plus `renewal` when Nexus attached one, `retry_after` (seconds) when rate limited, and `removed_remotely` / `rollback_error_code` when the activation gate vetoed an activation.
 
+### Network license (`wp_ajax_{prefix}_network_license`)
+
+Registered on multisite only. Nonce `{ajax_action}_network_license`; capability `manage_network_options`.
+
+| `sub_action` | Purpose |
+|---|---|
+| `get_status` | `context: "network"`, `is_network_activated`, `source`, `has_key`, `license_key_masked`, `updated_at`; the seat summary `subsites_total`, `subsites_active`, `subsites_waiting`, `seats_max` (0 = unlimited, null = not known yet), `seats_left` (null when unlimited or unknown); and `subsites` (up to 500): `blog_id`, `domain`, `holds_seat`, `is_activated`, `status`, `error_code`, `source`, `site`, `last_success_at`, `auto_activation_error`, `retry_at`. Read from each subsite's row, without asking Nexus. |
+| `activate_all` | Activates every subsite still waiting, each inside `switch_to_blog()` on its own address. Refused with `not_enough_seats` plus `needed` and `left` when the seats cannot cover them all. Returns the seat summary and `results`: `{blog_id, domain, activated, error_code, is_counted}` per subsite; one failure does not stop the rest. |
+| `activate_sites` | Body: `blog_ids` (array or comma-separated). Same as `activate_all` for the picked subsites only. |
+| `save_key` | Body: `license_key`. Activates the main site with it, then stores it network-wide. A refused key (invalid, expired, wrong product …) is not stored; a key with no seat left, or an unreachable server, is stored and `main_site_error_code` says why. |
+| `remove_key` | Deletes the network key and deactivates the main site; other subsites follow on their next admin load. |
+
+`save_key` and `remove_key` refuse with `key_from_constant` when the wp-config constant is set, and with `not_network_activated` when the plugin is not network-activated.
+
 ### Account (`wp_ajax_{prefix}_account`)
 
 | `sub_action` | Purpose |
@@ -337,7 +404,7 @@ Errors answer `{code, message}` with HTTP 400, plus `renewal` when Nexus attache
 | `init_oauth` | Returns `authorize_url` + `state`. |
 | `logout` | Clears the account session. |
 | `get_status` | Returns `connected` (a sign-in is in progress) + any OAuth flash error. |
-| `fetch_licenses` | Lists the signed-in user's licenses for the picker. Fails with `account_expired` when the sign-in has lapsed. |
+| `fetch_licenses` | Lists the signed-in user's licenses for the picker. Fails with `account_expired` when the sign-in has lapsed, `sign_in_other_user` when another admin started it. |
 | `activate_license` | Body: `license_key`. Activates it and ends the sign-in. |
 
 Nonce: `{ajax_action}_account`. Capability: `manage_options`.
@@ -407,10 +474,21 @@ Everything the SDK stores lives in one `wp_options` row (keyed by `ClientConfig:
         ],
         'site'              => ['active' => true, 'is_counted' => true], // this site's seat, or null
         'activated_at'      => 1713484800,
+        'source'            => 'manual',      // or 'constant' / 'network': where the key came from
+        'activated_domain'  => 'example.com', // normalised domain it was activated on
         'last_validated_at' => 1713484800,    // last attempt to check, answered or not
         'last_success_at'   => 1713484800,    // last time Nexus answered — what the details date from
     ],
+    'auto_activation' => [                    // only while an automatic activation keeps failing
+        'fingerprint'     => 'a1b2c3d4e5f60718', // hash prefix telling a new key from the same one
+        'source'          => 'constant',
+        'attempts'        => 2,
+        'last_attempt_at' => 1713484800,
+        'retry_at'        => 1713506400,
+        'error_code'      => 'activation_limit_reached',
+    ],
     'account' => [                            // only while a sign-in is in progress
+        'user_id'        => 1,                // the WordPress user who started it; only they see it
         'access_token'   => '<sodium ciphertext>',
         'user'           => ['email' => 'buyer@example.com', 'name' => 'Ada Buyer'],
         'connected_at'   => 1713484800,
@@ -427,11 +505,13 @@ The `get_status` sub-action adds `state`, the `classify()` result: `{code, days_
 
 OAuth CSRF state tokens are short-lived transients keyed by `{oauth_state_prefix}{state}` (10-minute TTL).
 
+A network-activated plugin also keeps the network key in the site option `{option_key}_network` (`['license_key' => '<ciphertext>', 'updated_at' => int]`) and the ids of subsites created since in `{option_key}_network_new_sites`.
+
 Manifest responses are cached in a site transient keyed by `wp_premium_sdk_manifest_{product_slug}` (12-hour TTL); failed fetches are tracked in `wp_premium_sdk_manifest_{product_slug}_failure`.
 
 ### Which site is licensed
 
-Each installation is licensed on its own `home_url()` (scheme, `www.` and trailing slash dropped, path kept). On a multisite network **every subsite counts as its own site** and uses its own seat, whether the plugin is network-activated or not. `Request::useNetworkLicenceFor()` is deprecated and does nothing.
+Each installation is licensed on its own `home_url()` (scheme, `www.` and trailing slash dropped, path kept). On a multisite network **every subsite counts as its own site** and uses its own seat, whether the plugin is network-activated or not. `Request::useNetworkLicenceFor()` is deprecated and does nothing. A network-activated plugin shares one key across the network (see [Managed keys](#managed-keys)), but each subsite still activates it on its own address and seat.
 
 ---
 

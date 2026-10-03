@@ -7,6 +7,8 @@ use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Encryption\SodiumEncryptor;
 use VeronaLabs\WpPremiumSdk\Feature\FeatureInstaller;
 use VeronaLabs\WpPremiumSdk\Http\ApiClient;
+use VeronaLabs\WpPremiumSdk\License\AutoActivator;
+use VeronaLabs\WpPremiumSdk\License\KeySource;
 use VeronaLabs\WpPremiumSdk\License\LicenseClient;
 use VeronaLabs\WpPremiumSdk\License\LicenseEndpoints;
 use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
@@ -14,6 +16,7 @@ use VeronaLabs\WpPremiumSdk\License\LicenseManager;
 use VeronaLabs\WpPremiumSdk\Store\PremiumStore;
 use VeronaLabs\WpPremiumSdk\Tests\WpStub;
 use VeronaLabs\WpPremiumSdk\Update\PluginUpdater;
+use VeronaLabs\WpPremiumSdk\Update\TierPackageInstaller;
 
 /**
  * The license AJAX sub-actions, through the same dispatch() WordPress calls.
@@ -40,10 +43,20 @@ class LicenseEndpointsTest extends TestCase
         ]);
 
         $client = new LicenseClient($config, new ApiClient($config));
-        $this->manager = new LicenseManager($client, new PremiumStore($config), new SodiumEncryptor('wp_statistics_premium_cipher'));
+        $store = new PremiumStore($config);
+        $this->manager = new LicenseManager($client, $store, new SodiumEncryptor('wp_statistics_premium_cipher'));
         $updater = new PluginUpdater($config, $client, $this->manager, 'wp-statistics-premium/wp-statistics-premium.php');
 
-        $this->endpoints = new LicenseEndpoints($config, $this->manager, $updater, new FeatureInstaller($config));
+        $keySource = new KeySource($config);
+        $this->endpoints = new LicenseEndpoints(
+            $config,
+            $this->manager,
+            $updater,
+            new FeatureInstaller($config),
+            $keySource,
+            new AutoActivator($this->manager, $keySource, $store),
+            new TierPackageInstaller($config, $updater, 'wp-statistics-premium/wp-statistics-premium.php')
+        );
     }
 
     protected function tearDown(): void

@@ -5,7 +5,10 @@ namespace VeronaLabs\WpPremiumSdk\Update;
 use Exception;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Http\ApiException;
+use VeronaLabs\WpPremiumSdk\License\KeySource;
+use VeronaLabs\WpPremiumSdk\License\LicenseActionException;
 use VeronaLabs\WpPremiumSdk\License\LicenseClient;
+use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\License\LicenseManager;
 
 /**
@@ -14,6 +17,11 @@ use VeronaLabs\WpPremiumSdk\License\LicenseManager;
  * Hooks `pre_set_site_transient_update_plugins` so "check for updates" in
  * wp-admin surfaces the plugin update returned by /api/v1/{product}/update/manifest.
  * Also exposes the manifest itself so the admin UI can drive module updates.
+ *
+ * On a network-activated plugin the update check is network-wide, like the plugin
+ * files and the update transient: it uses the network key and counts as licensed
+ * when the main site's activation is valid, whichever subsite triggers it — so a
+ * subsite without a seat cannot make the update disappear for the whole network.
  */
 class PluginUpdater
 {
@@ -42,13 +50,15 @@ class PluginUpdater
     private LicenseClient $client;
     private LicenseManager $license;
     private string $pluginBasename;
+    private ?KeySource $keySource;
 
-    public function __construct(ClientConfig $config, LicenseClient $client, LicenseManager $license, string $pluginBasename)
+    public function __construct(ClientConfig $config, LicenseClient $client, LicenseManager $license, string $pluginBasename, ?KeySource $keySource = null)
     {
         $this->config = $config;
         $this->client = $client;
         $this->license = $license;
         $this->pluginBasename = $pluginBasename;
+        $this->keySource = $keySource;
     }
 
     public function register(): void
@@ -69,7 +79,7 @@ class PluginUpdater
         // Don't offer an update to a site whose license isn't currently valid
         // (deactivated/expired) — fetchManifest() already short-circuits on an
         // invalid license, but a stale manifest cache could still be injected.
-        if (! $this->license->isValid()) {
+        if ($this->updateKey() === null) {
             return $transient;
         }
 
@@ -126,11 +136,7 @@ class PluginUpdater
             }
         }
 
-        if (! $this->license->isValid()) {
-            return null;
-        }
-
-        $licenseKey = $this->license->getLicenseKey();
+        $licenseKey = $this->updateKey();
 
         if (! $licenseKey) {
             return null;
@@ -151,6 +157,80 @@ class PluginUpdater
     }
 
     /**
+     * The manifest from the last successful fetch, without asking Nexus. Null when
+     * none is cached.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function cachedManifest(): ?array
+    {
+        $cached = get_site_transient($this->cacheKey());
+
+        return is_array($cached) ? $cached : null;
+    }
+
+    /**
+     * Ask Nexus for the licensed package as it stands, whatever version is
+     * installed: the request leaves out `current_version`, so Nexus answers with the
+     * full manifest (package URL included) even when the version is current. Used to
+     * install the licensed tier's build over another tier of the same version.
+     *
+     * Nothing is cached — the answer does not describe the installed version — but
+     * the outcome is recorded like any check: a failure feeds the backoff, a success
+     * clears it. A wait the server asked for (rate limited, Retry-After) is honoured;
+     * the other backoff waits are not, since a person asked for this.
+     *
+     * @throws ApiException When Nexus refuses or cannot be reached, or is still
+     *                      rate limiting this site (`rate_limited`, with retry_after).
+     * @throws LicenseActionException When no valid license is stored.
+     *
+     * @return array<string, mixed>
+     */
+    public function fetchPackageManifest(): array
+    {
+        $licenseKey = $this->updateKey();
+
+        if (! $licenseKey) {
+            throw new LicenseActionException(LicenseErrorCode::NOT_ACTIVATED, 'No valid license is activated on this site.');
+        }
+
+        $wait = $this->rateLimitedFor();
+
+        if ($wait !== null) {
+            throw new ApiException('Too many requests.', LicenseErrorCode::RATE_LIMITED, [], 429, null, $wait);
+        }
+
+        try {
+            $manifest = $this->client->fetchManifest($licenseKey, null);
+        } catch (Exception $e) {
+            $this->recordFailure($e);
+
+            throw $e;
+        }
+
+        delete_site_transient($this->failureCacheKey());
+
+        return $manifest;
+    }
+
+    /**
+     * Seconds left before Nexus wants to hear from this site again, when the last
+     * failure was a rate limit. Null otherwise.
+     */
+    public function rateLimitedFor(): ?int
+    {
+        $failure = get_site_transient($this->failureCacheKey());
+
+        if (! is_array($failure) || ($failure['error_code'] ?? '') !== LicenseErrorCode::RATE_LIMITED) {
+            return null;
+        }
+
+        $left = (int) ($failure['retry_at'] ?? 0) - time();
+
+        return $left > 0 ? $left : null;
+    }
+
+    /**
      * Forget the cached manifest and any failure backoff — the license changed,
      * so the next check should ask straight away.
      */
@@ -168,6 +248,26 @@ class PluginUpdater
     public function cacheKeys(): array
     {
         return [$this->cacheKey(), $this->failureCacheKey()];
+    }
+
+    /**
+     * The key update checks run on, or null when this install is not licensed for
+     * updates. Network-activated: the network (or wp-config) key, when the main
+     * site's activation is valid. Otherwise: this site's key, when it is valid.
+     */
+    private function updateKey(): ?string
+    {
+        if ($this->keySource !== null && $this->keySource->isNetworkManaged() && $this->keySource->network() !== null) {
+            $provided = $this->keySource->provided();
+
+            if ($provided === null || ! LicenseManager::isValidLicenseData($this->keySource->network()->mainSiteLicense())) {
+                return null;
+            }
+
+            return $provided['key'];
+        }
+
+        return $this->license->isValid() ? $this->license->getLicenseKey() : null;
     }
 
     private function recordFailure(Exception $e): void

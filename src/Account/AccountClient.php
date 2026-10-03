@@ -5,6 +5,7 @@ namespace VeronaLabs\WpPremiumSdk\Account;
 use Exception;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Http\ApiClient;
+use VeronaLabs\WpPremiumSdk\Support\Request;
 
 /**
  * HTTP client for Nexus OAuth + account endpoints.
@@ -30,6 +31,8 @@ class AccountClient
         return $this->http->post('/api/v1/auth/exchange-code', [
             'code' => $code,
             'product_slug' => $this->config->productSlug(),
+            // Names the token on the account's device list.
+            'device_name' => Request::currentDomain(),
         ]);
     }
 

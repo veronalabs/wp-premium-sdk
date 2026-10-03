@@ -25,6 +25,14 @@ use VeronaLabs\WpPremiumSdk\Store\PremiumStore;
  * lapses on its own when the access token expires (24 hours unless Nexus says
  * otherwise). No refresh token is stored; Nexus does not issue one.
  *
+ * Every way out of the picker deletes the session: activating a license (through
+ * the picker, or by key — LicenseManager calls endSignIn()), signing out, and the
+ * session passing its `expires_at`, which is checked on every read.
+ *
+ * The session belongs to the WordPress user who started it (`user_id`). Only that
+ * user sees it: for any other admin isConnected() is false, there is no user or
+ * pending choice, and the picker actions answer `sign_in_other_user`.
+ *
  * The access token is encrypted at rest.
  */
 class AccountManager
@@ -39,6 +47,9 @@ class AccountManager
     private AccountClient $client;
     private PremiumStore $store;
     private EncryptorInterface $encryptor;
+
+    /** Set when this request found the session expired and deleted it. */
+    private bool $lapsed = false;
 
     public function __construct(ClientConfig $config, AccountClient $client, PremiumStore $store, EncryptorInterface $encryptor)
     {
@@ -103,6 +114,7 @@ class AccountManager
         $now = time();
 
         $this->storeSession([
+            'user_id' => (int) get_current_user_id(),
             'access_token' => $this->encryptor->encrypt($accessToken),
             'user' => [
                 'email' => $user['email'] ?? '',
@@ -170,19 +182,20 @@ class AccountManager
      */
     public function isConnected(): bool
     {
-        $session = $this->store->get('account');
+        $session = $this->session();
 
-        return ! empty($session['access_token']) && ! $this->isExpired($session);
+        return ! empty($session['access_token']) && $this->belongsToCurrentUser($session);
     }
 
     /**
-     * The decrypted access token, or null when there is none or it has expired.
+     * The decrypted access token, or null when there is none, it has expired, or
+     * another user started the sign-in.
      */
     public function getAccessToken(): ?string
     {
-        $session = $this->store->get('account');
+        $session = $this->session();
 
-        if (empty($session['access_token']) || $this->isExpired($session)) {
+        if (empty($session['access_token']) || ! $this->belongsToCurrentUser($session)) {
             return null;
         }
 
@@ -190,13 +203,23 @@ class AccountManager
     }
 
     /**
-     * Whether any sign-in session is stored, expired or not.
+     * Whether a sign-in session is stored, or was until this request found it
+     * expired (so callers can still say "your sign-in expired").
      */
     public function hasSession(): bool
     {
-        $session = $this->store->get('account');
+        return $this->lapsed || ! empty($this->session()['access_token']);
+    }
 
-        return ! empty($session['access_token']);
+    /**
+     * Whether a sign-in is in progress for another WordPress user. Such a session
+     * stays out of this user's way: they see the normal activation screen.
+     */
+    public function isSignInOfOtherUser(): bool
+    {
+        $session = $this->session();
+
+        return ! empty($session['access_token']) && ! $this->belongsToCurrentUser($session);
     }
 
     /**
@@ -215,7 +238,7 @@ class AccountManager
      */
     public function endSignIn(): void
     {
-        $token = $this->getAccessToken();
+        $token = $this->rawAccessToken();
 
         if ($token) {
             try {
@@ -240,7 +263,7 @@ class AccountManager
 
     public function logout(): void
     {
-        $token = $this->getAccessToken();
+        $token = $this->rawAccessToken();
 
         if ($token) {
             try {
@@ -258,7 +281,12 @@ class AccountManager
      */
     public function getUser(): ?array
     {
-        $session = $this->store->get('account');
+        $session = $this->session();
+
+        if (! $this->belongsToCurrentUser($session)) {
+            return null;
+        }
+
         $user = $session['user'] ?? null;
 
         if (! is_array($user) || empty($user['email'])) {
@@ -283,7 +311,12 @@ class AccountManager
      */
     public function getPendingChoice(): ?array
     {
-        $session = $this->store->get('account');
+        $session = $this->session();
+
+        if (! $this->belongsToCurrentUser($session)) {
+            return null;
+        }
+
         $choice = $session['pending_choice'] ?? null;
 
         if (! is_array($choice) || $choice === []) {
@@ -307,7 +340,12 @@ class AccountManager
 
     public function consumeFlashError(): ?string
     {
-        $session = $this->store->get('account');
+        $session = $this->session();
+
+        if (! $this->belongsToCurrentUser($session)) {
+            return null;
+        }
+
         $error = $session['flash_error'] ?? null;
 
         if ($error !== null && $session) {
@@ -320,9 +358,55 @@ class AccountManager
 
     public function setFlashError(string $message): void
     {
-        $session = $this->store->get('account') ?? [];
+        $session = $this->session() ?? [];
+        $session['user_id'] = $session['user_id'] ?? (int) get_current_user_id();
         $session['flash_error'] = $message;
         $this->store->set('account', $session);
+    }
+
+    /**
+     * The stored session, deleting it first when its token has expired — so an
+     * abandoned picker stops counting as a sign-in without waiting for a 401. A row
+     * holding only a flash error (no token) is left alone.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function session(): ?array
+    {
+        $session = $this->store->get('account');
+
+        if (is_array($session) && ! empty($session['access_token']) && $this->isExpired($session)) {
+            $this->store->delete('account');
+            $this->lapsed = true;
+
+            return null;
+        }
+
+        return $session;
+    }
+
+    /**
+     * The token whoever started the sign-in holds, for revoking it on the way out.
+     */
+    private function rawAccessToken(): ?string
+    {
+        $session = $this->session();
+
+        return ! empty($session['access_token']) ? $this->encryptor->decrypt($session['access_token']) : null;
+    }
+
+    /**
+     * A session stored before `user_id` existed belongs to whoever asks.
+     *
+     * @param  array<string, mixed>|null  $session
+     */
+    private function belongsToCurrentUser(?array $session): bool
+    {
+        if (! is_array($session) || ! isset($session['user_id'])) {
+            return true;
+        }
+
+        return (int) $session['user_id'] === (int) get_current_user_id();
     }
 
     /**

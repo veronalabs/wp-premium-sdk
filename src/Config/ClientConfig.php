@@ -27,6 +27,10 @@ final class ClientConfig
      *     current_version: string,
      *     ajax_action?: string,
      *     modules_path?: string,
+     *     nonce_action?: string,
+     *     nonce_param?: string,
+     *     license_key_constant?: string,
+     *     installed_tier?: string,
      * } $data
      */
     public function __construct(array $data)
@@ -45,6 +49,8 @@ final class ClientConfig
         $data['modules_path'] = $data['modules_path'] ?? '';
         $data['nonce_action'] = $data['nonce_action'] ?? '';
         $data['nonce_param'] = $data['nonce_param'] ?? 'nonce';
+        $data['license_key_constant'] = (string) ($data['license_key_constant'] ?? '');
+        $data['installed_tier'] = (string) ($data['installed_tier'] ?? '');
 
         $this->data = $data;
     }
@@ -120,5 +126,26 @@ final class ClientConfig
     public function nonceParam(): string
     {
         return $this->data['nonce_param'];
+    }
+
+    /**
+     * Name of the wp-config constant that may hold the license key (e.g.
+     * "WP_STATISTICS_LICENSE_KEY"), or '' when the plugin offers none. When the
+     * constant is defined, the SDK activates that key on its own and the license
+     * page can no longer change or remove it.
+     */
+    public function licenseKeyConstant(): string
+    {
+        return $this->data['license_key_constant'];
+    }
+
+    /**
+     * The tier of the build that is installed (e.g. "basic", "pro"), or '' when the
+     * plugin does not say. Compared with the tier Nexus licenses to offer the
+     * licensed tier's package when they differ.
+     */
+    public function installedTier(): string
+    {
+        return $this->data['installed_tier'];
     }
 }

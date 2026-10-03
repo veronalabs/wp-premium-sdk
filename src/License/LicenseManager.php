@@ -27,23 +27,46 @@ class LicenseManager
     private LicenseClient $client;
     private PremiumStore $store;
     private EncryptorInterface $encryptor;
+    private ?KeySource $keySource;
 
-    public function __construct(LicenseClient $client, PremiumStore $store, EncryptorInterface $encryptor)
+    /** @var array<int, callable> Called after every successful activation. */
+    private array $activatedCallbacks = [];
+
+    /**
+     * @param  KeySource|null  $keySource  Says whether a wp-config constant or the
+     *                                     network admin manages the key; without it
+     *                                     every key is entered on the license page.
+     */
+    public function __construct(LicenseClient $client, PremiumStore $store, EncryptorInterface $encryptor, ?KeySource $keySource = null)
     {
         $this->client = $client;
         $this->store = $store;
         $this->encryptor = $encryptor;
+        $this->keySource = $keySource;
     }
 
     /**
      * Activate a license key on this site.
      *
+     * The domain it is activated on is stored as `activated_domain`, so a later
+     * change of address (a staging clone, a move) shows up in domainChange().
+     *
+     * @param  string  $source  Where the key came from: KeySource::MANUAL (the license
+     *                          page or account sign-in), KeySource::CONSTANT or
+     *                          KeySource::NETWORK. A manual key is refused with
+     *                          `key_from_constant` / `network_managed` while the key
+     *                          is managed elsewhere.
+     *
      * @throws Exception
      *
      * @return array<string, mixed> Public-safe license data
      */
-    public function activate(string $licenseKey): array
+    public function activate(string $licenseKey, string $source = KeySource::MANUAL): array
     {
+        if ($source === KeySource::MANUAL) {
+            $this->refuseWhenManaged();
+        }
+
         $domain = Request::currentDomain();
 
         $activateResponse = $this->client->activate($licenseKey, $domain, home_url());
@@ -55,6 +78,8 @@ class LicenseManager
         }
 
         $licenseData = $this->mapApiResponse($activateResponse, $licenseKey, $validateResponse);
+        $licenseData['source'] = $source;
+        $licenseData['activated_domain'] = Request::normaliseDomain($domain);
 
         // Generic veto seam: a host plugin can block activation (e.g. a license
         // tier lower than the installed build) by returning a non-empty error
@@ -70,7 +95,20 @@ class LicenseManager
 
         $this->store->set('license', $licenseData);
 
+        foreach ($this->activatedCallbacks as $callback) {
+            $callback();
+        }
+
         return $this->publicData($licenseData);
+    }
+
+    /**
+     * Run `$callback` after every successful activation, whichever way the key came
+     * in. The provider uses it to end an account sign-in once a license is active.
+     */
+    public function onActivated(callable $callback): void
+    {
+        $this->activatedCallbacks[] = $callback;
     }
 
     /**
@@ -157,7 +195,7 @@ class LicenseManager
             return false;
         }
 
-        $this->store->set('license', $this->mapApiResponse($response, $licenseKey, null, $this->store->get('license')));
+        $this->store->set('license', $this->withActivatedDomain($this->mapApiResponse($response, $licenseKey, null, $this->store->get('license'))));
 
         return true;
     }
@@ -221,7 +259,7 @@ class LicenseManager
             $response = $this->client->validate($licenseKey, $domain);
 
             $existing = $this->store->get('license');
-            $licenseData = $this->mapApiResponse($response, $licenseKey, null, $existing);
+            $licenseData = $this->withActivatedDomain($this->mapApiResponse($response, $licenseKey, null, $existing));
             $this->store->set('license', $licenseData);
 
             return ($licenseData['status'] ?? '') === 'active';
@@ -270,11 +308,20 @@ class LicenseManager
 
     public function isValid(): bool
     {
-        if (! $this->isActivated()) {
+        return self::isValidLicenseData($this->store->get('license'));
+    }
+
+    /**
+     * Whether a stored license section (this site's, or another site's read from
+     * its own row) holds a key, is active and has not expired.
+     *
+     * @param  array<string, mixed>|null  $data
+     */
+    public static function isValidLicenseData(?array $data): bool
+    {
+        if (empty($data) || empty($data['license_key'])) {
             return false;
         }
-
-        $data = $this->store->get('license');
 
         if (($data['status'] ?? '') !== 'active') {
             return false;
@@ -424,6 +471,107 @@ class LicenseManager
     }
 
     /**
+     * Where the stored key came from (KeySource::MANUAL, CONSTANT or NETWORK), or
+     * null when no license is stored. Licenses stored before this was tracked are
+     * `manual`.
+     */
+    public function getSource(): ?string
+    {
+        if (! $this->isActivated()) {
+            return null;
+        }
+
+        $source = (string) ($this->store->get('license')['source'] ?? '');
+
+        return $source !== '' ? $source : KeySource::MANUAL;
+    }
+
+    /**
+     * Record a new source for the stored key without asking Nexus — when the key on
+     * file turns out to be the one a constant or the network now provides.
+     */
+    public function setSource(string $source): void
+    {
+        $data = $this->store->get('license');
+
+        if (! $data) {
+            return;
+        }
+
+        $data['source'] = $source;
+        $this->store->set('license', $data);
+    }
+
+    /**
+     * The domain the license was activated on and this site's domain now, when they
+     * differ: a staging copy cloned from production, or a site moved to a new address.
+     * Both are normalised (Request::normaliseDomain()). Null when they match, when no
+     * license is stored, or when the license predates `activated_domain` and Nexus has
+     * not yet confirmed this domain.
+     *
+     * @return array{was: string, now: string}|null
+     */
+    public function domainChange(): ?array
+    {
+        $was = (string) ($this->store->get('license')['activated_domain'] ?? '');
+
+        if ($was === '' || ! $this->isActivated()) {
+            return null;
+        }
+
+        $now = Request::normaliseDomain(Request::currentDomain());
+
+        return $now !== '' && $now !== $was ? ['was' => $was, 'now' => $now] : null;
+    }
+
+    /**
+     * Move the license to this site's current domain: activate it here first, and
+     * only once that worked, release the seat the old domain holds.
+     *
+     * Whether this domain uses a seat is Nexus's call (`site.is_counted` in the
+     * activate reply); the SDK does not guess from the name. By default the old
+     * domain is released only when the new one is counted: a development copy
+     * (staging.*, *.local …) uses no seat, and releasing production for it would
+     * cut production off. `$releaseOld` true or false overrides that.
+     *
+     * @throws Exception When there is nothing to move (`domain_unchanged`), the key
+     *                   is managed elsewhere, or the activation fails — in which case
+     *                   nothing has changed and the old domain keeps its seat.
+     *
+     * @return array{
+     *     activated: array{domain: string, is_counted: bool|null},
+     *     released: array{domain: string, attempted: bool, removed_remotely: bool, error_code: string|null},
+     *     license: array<string, mixed>
+     * }
+     */
+    public function moveLicense(?bool $releaseOld = null): array
+    {
+        $change = $this->domainChange();
+        $licenseKey = $this->getLicenseKey();
+
+        if ($change === null || ! $licenseKey) {
+            throw new LicenseActionException(LicenseErrorCode::DOMAIN_UNCHANGED, 'The license is already registered to this site.');
+        }
+
+        $license = $this->activate($licenseKey, $this->getSource() ?? KeySource::MANUAL);
+
+        $site = $this->store->get('license')['site'] ?? null;
+        $isCounted = is_array($site) && isset($site['is_counted']) ? (bool) $site['is_counted'] : null;
+
+        $released = ['domain' => $change['was'], 'attempted' => false, 'removed_remotely' => false, 'error_code' => null];
+
+        if ($releaseOld ?? ($isCounted !== false)) {
+            $released = ['domain' => $change['was'], 'attempted' => true] + $this->releaseSeat($licenseKey, $change['was']);
+        }
+
+        return [
+            'activated' => ['domain' => $change['now'], 'is_counted' => $isCounted],
+            'released' => $released,
+            'license' => $license,
+        ];
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function getLicenseData(): ?array
@@ -560,6 +708,10 @@ class LicenseManager
             'sites' => is_array($sitesRaw) ? $this->mapSites($sitesRaw) : ($existing['sites'] ?? null),
             'site' => is_array($siteRaw) ? $this->mapSiteState($siteRaw) : ($existing['site'] ?? null),
             'activated_at' => $existing['activated_at'] ?? $now,
+            // Where the key came from and the domain it was activated on; set by
+            // activate(), carried through every refresh.
+            'source' => $existing['source'] ?? KeySource::MANUAL,
+            'activated_domain' => $existing['activated_domain'] ?? '',
             // Last attempt to check with Nexus, answered or not.
             'last_validated_at' => $now,
             // Last time Nexus actually answered — what the stored details date from.
@@ -568,11 +720,12 @@ class LicenseManager
     }
 
     /**
-     * Release the seat `$domain` holds, reporting rather than throwing.
+     * Release the seat `$domain` holds on `$licenseKey`, reporting rather than
+     * throwing. Leaves the stored license alone.
      *
      * @return array{removed_remotely: bool, error_code: string|null}
      */
-    private function releaseSeat(string $licenseKey, string $domain, int $timeout = ApiClient::DEFAULT_TIMEOUT): array
+    public function releaseSeat(string $licenseKey, string $domain, int $timeout = ApiClient::DEFAULT_TIMEOUT): array
     {
         try {
             $this->client->deactivate($licenseKey, $domain, $timeout);
@@ -716,6 +869,40 @@ class LicenseManager
             'active' => array_key_exists('active', $site) ? (bool) $site['active'] : null,
             'is_counted' => array_key_exists('is_counted', $site) ? (bool) $site['is_counted'] : null,
         ];
+    }
+
+    /**
+     * Nexus just answered a check made with this site's domain, so the domain holds
+     * an activation: a license stored before `activated_domain` existed learns it
+     * here. A known domain is never overwritten — that is how a change is noticed.
+     *
+     * @param  array<string, mixed>  $licenseData
+     * @return array<string, mixed>
+     */
+    private function withActivatedDomain(array $licenseData): array
+    {
+        if (($licenseData['activated_domain'] ?? '') === '' && ($licenseData['status'] ?? '') === LicenseErrorCode::ACTIVE) {
+            $licenseData['activated_domain'] = Request::normaliseDomain(Request::currentDomain());
+        }
+
+        return $licenseData;
+    }
+
+    /**
+     * @throws LicenseActionException When a wp-config constant or the network admin
+     *                                manages the key.
+     */
+    private function refuseWhenManaged(): void
+    {
+        $code = $this->keySource !== null ? $this->keySource->refusalCode() : null;
+
+        if ($code === LicenseErrorCode::KEY_FROM_CONSTANT) {
+            throw new LicenseActionException($code, 'The license key is set in wp-config.php. Change it there.');
+        }
+
+        if ($code === LicenseErrorCode::NETWORK_MANAGED) {
+            throw new LicenseActionException($code, 'The license is managed by your network admin.');
+        }
     }
 
     /**
