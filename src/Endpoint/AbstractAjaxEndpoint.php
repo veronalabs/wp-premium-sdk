@@ -6,6 +6,7 @@ use Exception;
 use Throwable;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Http\ApiException;
+use VeronaLabs\WpPremiumSdk\License\ActivationVetoedException;
 
 /**
  * Base class for WP AJAX action dispatchers.
@@ -68,6 +69,16 @@ abstract class AbstractAjaxEndpoint
                 if (is_array($renewal)) {
                     $extra['renewal'] = $renewal;
                 }
+                // How long the server asked us to wait, so the UI can say when to retry.
+                if ($e->getRetryAfter() !== null) {
+                    $extra['retry_after'] = $e->getRetryAfter();
+                }
+            }
+            // A vetoed activation already took a seat on Nexus; say whether it was
+            // handed back so the UI can ask the user to free it when it was not.
+            if ($e instanceof ActivationVetoedException) {
+                $extra['removed_remotely'] = $e->removedRemotely();
+                $extra['rollback_error_code'] = $e->rollbackErrorCode();
             }
             $this->errorResponse($e->getMessage(), $code, 400, $extra);
         }

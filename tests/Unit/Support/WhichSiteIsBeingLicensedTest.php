@@ -23,19 +23,20 @@ use VeronaLabs\WpPremiumSdk\Tests\WpStub;
  * `home_url()` answers both: it is the installation's address, it keeps the path that
  * separates one subsite from another, and it does not change when a visitor switches
  * language.
+ *
+ * On a network every subsite is its own site with its own seat, whether the plugin is
+ * network-activated or not (wp-premium-sdk#7).
  */
 final class WhichSiteIsBeingLicensedTest extends TestCase
 {
     protected function setUp(): void
     {
         WpStub::reset();
-        Request::useNetworkLicenceFor('');
     }
 
     protected function tearDown(): void
     {
         WpStub::reset();
-        Request::useNetworkLicenceFor('');
     }
 
     public function test_a_plain_site_is_its_own_host(): void
@@ -84,15 +85,14 @@ final class WhichSiteIsBeingLicensedTest extends TestCase
     }
 
     /**
-     * A network-activated plugin was installed once, for all of them, so the network
-     * holds the licence and every subsite answers with the network's address.
+     * Network-activating the plugin does not turn the network into one seat: each
+     * subsite still answers with its own address.
      */
-    public function test_a_network_activated_plugin_licenses_the_whole_network(): void
+    public function test_a_network_activated_plugin_still_counts_every_subsite(): void
     {
         WpStub::$isMultisite = true;
         WpStub::$networkHomeUrl = 'https://example.com';
         WpStub::$networkActivatedPlugins = ['acme/acme.php'];
-        Request::useNetworkLicenceFor('acme/acme.php');
 
         WpStub::$homeUrl = 'https://example.com/site1';
         $first = Request::currentDomain();
@@ -100,38 +100,35 @@ final class WhichSiteIsBeingLicensedTest extends TestCase
         WpStub::$homeUrl = 'https://example.com/site2';
         $second = Request::currentDomain();
 
-        self::assertSame('example.com', $first);
-        self::assertSame($first, $second, 'A network-activated plugin is one licence for the network.');
+        self::assertSame('example.com/site1', $first);
+        self::assertSame('example.com/site2', $second);
     }
 
     /**
-     * Activated on one subsite only, the network address is not the answer — that subsite
-     * bought its own licence.
+     * The old opt-in is kept only so hosts that still call it do not fatal. It must
+     * not bring the network-wide answer back.
      */
-    public function test_a_plugin_activated_on_one_subsite_licenses_that_subsite(): void
-    {
-        WpStub::$isMultisite = true;
-        WpStub::$networkHomeUrl = 'https://example.com';
-        WpStub::$networkActivatedPlugins = [];
-        Request::useNetworkLicenceFor('acme/acme.php');
-        WpStub::$homeUrl = 'https://example.com/site1';
-
-        self::assertSame('example.com/site1', Request::currentDomain());
-    }
-
-    /**
-     * When the host plugin has not said which file it is, the network question cannot be
-     * answered. Answering for this site alone counts more sites rather than fewer, which
-     * is the safe direction to be wrong in.
-     */
-    public function test_without_a_plugin_file_the_subsite_answers_for_itself(): void
+    public function test_the_deprecated_network_opt_in_changes_nothing(): void
     {
         WpStub::$isMultisite = true;
         WpStub::$networkHomeUrl = 'https://example.com';
         WpStub::$networkActivatedPlugins = ['acme/acme.php'];
         WpStub::$homeUrl = 'https://example.com/site1';
 
+        Request::useNetworkLicenceFor('acme/acme.php');
+
         self::assertSame('example.com/site1', Request::currentDomain());
+    }
+
+    /**
+     * Comparing a site on the license with this one must ignore spelling only.
+     */
+    public function test_normalise_domain_ignores_spelling_but_keeps_the_path(): void
+    {
+        self::assertSame('example.com/site1', Request::normaliseDomain('HTTPS://www.Example.com:443/site1/'));
+        self::assertSame('example.com', Request::normaliseDomain('example.com.'));
+        self::assertSame('example.com:8080', Request::normaliseDomain('http://example.com:8080'));
+        self::assertNotSame(Request::normaliseDomain('example.com/site1'), Request::normaliseDomain('example.com/site2'));
     }
 
     /**

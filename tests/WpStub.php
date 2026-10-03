@@ -29,6 +29,9 @@ class WpStub
     /** @var array<string, mixed> */
     public static array $transients = [];
 
+    /** @var array<string, mixed> */
+    public static array $siteTransients = [];
+
     /**
      * Next wp_remote_* response(s). Each tuple: [statusCode, body|array, headers].
      *
@@ -50,6 +53,13 @@ class WpStub
      */
     public static array $filters = [];
 
+    /**
+     * Every wp_send_json_* payload, in order: ['success' => bool, 'data' => mixed, 'status' => int|null].
+     *
+     * @var array<int, array{success: bool, data: mixed, status: int|null}>
+     */
+    public static array $jsonResponses = [];
+
     public static function bootstrap(): void
     {
         if (defined('WP_PREMIUM_SDK_TESTS_BOOTSTRAPPED')) {
@@ -64,9 +74,11 @@ class WpStub
     {
         self::$options = [];
         self::$transients = [];
+        self::$siteTransients = [];
         self::$responseQueue = [];
         self::$requestLog = [];
         self::$filters = [];
+        self::$jsonResponses = [];
         self::$homeUrl = 'https://example.com';
         self::$networkHomeUrl = 'https://example.com';
         self::$isMultisite = false;
@@ -78,9 +90,19 @@ class WpStub
      *
      * @param  array<string, mixed>  $body
      */
-    public static function queueJson(int $status, array $body): void
+    public static function queueJson(int $status, array $body, array $headers = []): void
     {
-        self::$responseQueue[] = [$status, wp_json_encode($body), []];
+        self::$responseQueue[] = [$status, wp_json_encode($body), $headers];
+    }
+
+    /**
+     * The last JSON payload an AJAX handler sent.
+     *
+     * @return array{success: bool, data: mixed, status: int|null}|null
+     */
+    public static function lastJson(): ?array
+    {
+        return self::$jsonResponses ? self::$jsonResponses[count(self::$jsonResponses) - 1] : null;
     }
 
     /**

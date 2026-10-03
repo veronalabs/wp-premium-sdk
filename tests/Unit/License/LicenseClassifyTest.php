@@ -161,7 +161,7 @@ class LicenseClassifyTest extends TestCase
         $this->assertSame(LicenseErrorCode::DISABLED, $this->manager->classify()['code']);
     }
 
-    public function test_over_limit_only_when_max_activations_positive(): void
+    public function test_unlimited_seats_are_never_over_limit(): void
     {
         // max_activations 0 means "unlimited" — never over limit.
         $this->seed([
@@ -171,25 +171,78 @@ class LicenseClassifyTest extends TestCase
             'activation_count' => 99,
         ]);
         $this->assertSame(LicenseErrorCode::ACTIVE, $this->manager->classify()['code']);
+    }
 
+    /**
+     * Using exactly the seats paid for, this site among them, is the normal case.
+     */
+    public function test_three_of_three_with_this_site_is_active(): void
+    {
         $this->seed([
             'status' => 'active',
             'expires_at' => $this->inDays(30),
             'max_activations' => 3,
             'activation_count' => 3,
         ]);
+
+        $this->assertSame(LicenseErrorCode::ACTIVE, $this->manager->classify()['code']);
+    }
+
+    public function test_four_of_three_is_over_limit(): void
+    {
+        $this->seed([
+            'status' => 'active',
+            'expires_at' => $this->inDays(30),
+            'max_activations' => 3,
+            'activation_count' => 4,
+        ]);
+
         $this->assertSame(LicenseErrorCode::OVER_LIMIT, $this->manager->classify()['code']);
     }
 
-    public function test_over_limit_outranks_expired_but_not_suspended(): void
+    /**
+     * Renewing is the fix for an expired license, so its prompt must not be hidden
+     * behind a seat notice; an account hold still outranks both.
+     */
+    public function test_expired_outranks_over_limit_and_suspended_outranks_both(): void
     {
         $base = ['expires_at' => $this->inDays(-5), 'max_activations' => 2, 'activation_count' => 5];
 
         $this->seed(['status' => 'active'] + $base);
-        $this->assertSame(LicenseErrorCode::OVER_LIMIT, $this->manager->classify()['code']);
+        $this->assertSame(LicenseErrorCode::EXPIRED, $this->manager->classify()['code']);
+
+        $this->seed(['status' => 'expired', 'expires_at' => $this->inDays(30), 'max_activations' => 3, 'activation_count' => 3]);
+        $this->assertSame(LicenseErrorCode::EXPIRED, $this->manager->classify()['code']);
 
         $this->seed(['status' => 'suspended'] + $base);
         $this->assertSame(LicenseErrorCode::SUSPENDED, $this->manager->classify()['code']);
+    }
+
+    public function test_over_limit_outranks_expiring_soon(): void
+    {
+        $this->seed(['status' => 'active', 'expires_at' => $this->inDays(5), 'max_activations' => 1, 'activation_count' => 2]);
+
+        $this->assertSame(LicenseErrorCode::OVER_LIMIT, $this->manager->classify()['code']);
+    }
+
+    /**
+     * When Nexus says how this site stands, that wins over the bare counts.
+     */
+    public function test_nexus_site_block_decides_over_limit(): void
+    {
+        $full = ['status' => 'active', 'expires_at' => $this->inDays(30), 'max_activations' => 3, 'activation_count' => 3];
+
+        // Not activated here and every seat taken: no room for this site.
+        $this->seed($full + ['site' => ['active' => false, 'is_counted' => true]]);
+        $this->assertSame(LicenseErrorCode::OVER_LIMIT, $this->manager->classify()['code']);
+
+        // Activated here and one of the three: fine.
+        $this->seed($full + ['site' => ['active' => true, 'is_counted' => true]]);
+        $this->assertSame(LicenseErrorCode::ACTIVE, $this->manager->classify()['code']);
+
+        // A development site uses no seat, so it is never over, even at 5 of 3.
+        $this->seed(['activation_count' => 5] + $full + ['site' => ['active' => true, 'is_counted' => false]]);
+        $this->assertSame(LicenseErrorCode::ACTIVE, $this->manager->classify()['code']);
     }
 
     public function test_unrecognized_status_falls_through_to_invalid(): void

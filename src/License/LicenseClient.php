@@ -37,15 +37,20 @@ class LicenseClient
     }
 
     /**
+     * Release the seat `$domain` holds on this key. Any domain on the license works,
+     * not only this site's — that is how a site is removed from the license page.
+     *
+     * @param  int  $timeout  Seconds to wait; uninstall passes a short one.
+     *
      * @throws Exception
      */
-    public function deactivate(string $licenseKey, string $domain): array
+    public function deactivate(string $licenseKey, string $domain, int $timeout = ApiClient::DEFAULT_TIMEOUT): array
     {
         return $this->http->post('/api/v1/license/deactivate', [
             'license_key' => $licenseKey,
             'product_slug' => $this->config->productSlug(),
             'domain' => $domain,
-        ]);
+        ], [], $timeout);
     }
 
     /**

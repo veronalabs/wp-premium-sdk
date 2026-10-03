@@ -5,6 +5,7 @@ namespace VeronaLabs\WpPremiumSdk\Account;
 use Exception;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Endpoint\AbstractAjaxEndpoint;
+use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\License\LicenseManager;
 use VeronaLabs\WpPremiumSdk\Support\Request;
 
@@ -81,15 +82,41 @@ class AccountEndpoints extends AbstractAjaxEndpoint
         $token = $this->manager->getAccessToken();
 
         if (! $token) {
+            // A session that is still stored but yields no token has lapsed: clear
+            // it and say so, so the UI asks for a fresh sign-in.
+            $lapsed = $this->manager->hasSession();
+
+            if ($lapsed) {
+                $this->manager->clearSession();
+            }
+
             $this->errorResponse(
-                __('Not connected to Nexus account.', $this->config->textDomain()),
-                $this->getErrorCode()
+                $lapsed
+                    ? __('Your sign-in expired. Please sign in again.', $this->config->textDomain())
+                    : __('Not connected to Nexus account.', $this->config->textDomain()),
+                $lapsed ? LicenseErrorCode::ACCOUNT_EXPIRED : $this->getErrorCode()
             );
 
             return;
         }
 
-        $response = $this->client->licenses($token);
+        try {
+            $response = $this->client->licenses($token);
+        } catch (Exception $e) {
+            if (! $this->manager->isSignInExpired($e)) {
+                throw $e;
+            }
+
+            // The token died mid-picker: drop the sign-in so the UI offers a fresh one.
+            $this->manager->clearSession();
+            $this->errorResponse(
+                __('Your sign-in expired. Please sign in again.', $this->config->textDomain()),
+                LicenseErrorCode::ACCOUNT_EXPIRED
+            );
+
+            return;
+        }
+
         $licenses = $response['data'] ?? $response['licenses'] ?? [];
 
         $this->successResponse(['licenses' => $licenses]);
@@ -113,7 +140,8 @@ class AccountEndpoints extends AbstractAjaxEndpoint
 
         $data = $this->licenseManager->activate($licenseKey);
 
-        $this->manager->clearPendingChoice();
+        // The sign-in has done its job; from here on the license key is enough.
+        $this->manager->endSignIn();
 
         $this->successResponse(['license' => $data]);
     }

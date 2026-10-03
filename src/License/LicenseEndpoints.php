@@ -14,7 +14,7 @@ use VeronaLabs\WpPremiumSdk\Update\PluginUpdater;
  *
  * Action: wp_ajax_{prefix}_license
  * Sub-actions: activate, deactivate, get_status, check_updates,
- *              update_feature, install_features
+ *              update_feature, install_features, list_sites, remove_site
  */
 class LicenseEndpoints extends AbstractAjaxEndpoint
 {
@@ -44,6 +44,8 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
             'check_updates' => 'checkUpdates',
             'update_feature' => 'updateFeature',
             'install_features' => 'installFeatures',
+            'list_sites' => 'listSites',
+            'remove_site' => 'removeSite',
         ];
     }
 
@@ -78,10 +80,76 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
         // the tier ZIP and are gated by what exists on disk, so deleting them
         // on deactivate would be data loss. (`removed` is retained as an empty
         // array for response-shape compatibility with the dashboard client.)
-        $this->manager->deactivate();
+        //
+        // The license is always removed here; `removed_remotely` says whether Nexus
+        // released the seat too, and `error_code` why not, so the UI can tell the
+        // user to free it from their account.
+        $result = $this->manager->deactivate();
         $this->updater->flush();
 
-        $this->successResponse(['removed' => []]);
+        $this->successResponse([
+            'removed' => [],
+            'removed_remotely' => $result['removed_remotely'],
+            'error_code' => $result['error_code'],
+        ]);
+    }
+
+    /**
+     * The sites on this license, each carrying `this_site`. Fetched fresh from
+     * Nexus with this site's domain; when Nexus can't be reached the last known
+     * list is returned and `fresh` is false.
+     */
+    protected function listSites(): void
+    {
+        $fresh = $this->manager->isActivated() && $this->manager->refreshSites();
+        $license = $this->manager->getLicenseData() ?? [];
+
+        $this->successResponse([
+            'sites' => $this->manager->listSites(),
+            'fresh' => $fresh,
+            'max_activations' => (int) ($license['max_activations'] ?? 0),
+            'activation_count' => (int) ($license['activation_count'] ?? 0),
+            'manage_url' => (string) ($license['manage_url'] ?? ''),
+        ]);
+    }
+
+    /**
+     * Release another site's seat with this site's license key. Body: `domain`.
+     * This site is refused — removing it is what `deactivate` does.
+     *
+     * @throws Exception
+     */
+    protected function removeSite(): void
+    {
+        $domain = (string) Request::get('domain', '');
+
+        if ($domain === '') {
+            $this->errorResponse(__('Site domain is required.', $this->config->textDomain()), $this->getErrorCode());
+
+            return;
+        }
+
+        if (! $this->manager->isActivated()) {
+            $this->errorResponse(__('No license is activated on this site.', $this->config->textDomain()), LicenseErrorCode::NOT_ACTIVATED);
+
+            return;
+        }
+
+        if ($this->manager->isThisSite($domain)) {
+            $this->errorResponse(__('To remove this site, deactivate the license instead.', $this->config->textDomain()), 'this_site');
+
+            return;
+        }
+
+        $sites = $this->manager->removeSite($domain);
+        $license = $this->manager->getLicenseData() ?? [];
+
+        $this->successResponse([
+            'removed' => $domain,
+            'sites' => $sites,
+            'max_activations' => (int) ($license['max_activations'] ?? 0),
+            'activation_count' => (int) ($license['activation_count'] ?? 0),
+        ]);
     }
 
     protected function getStatus(): void
@@ -96,6 +164,8 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
             'is_activated' => $this->manager->isActivated(),
             'is_valid' => $this->manager->isValid(),
             'license' => $this->manager->getLicenseData(),
+            // The one state the UI should show (see LicenseManager::classify()).
+            'state' => $this->manager->classify(),
             'installed_features' => $this->installer->installedModules(),
         ]);
     }

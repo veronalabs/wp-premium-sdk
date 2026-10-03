@@ -4,6 +4,7 @@ namespace VeronaLabs\WpPremiumSdk\Update;
 
 use Exception;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
+use VeronaLabs\WpPremiumSdk\Http\ApiException;
 use VeronaLabs\WpPremiumSdk\License\LicenseClient;
 use VeronaLabs\WpPremiumSdk\License\LicenseManager;
 
@@ -17,6 +18,25 @@ use VeronaLabs\WpPremiumSdk\License\LicenseManager;
 class PluginUpdater
 {
     public const MANIFEST_CACHE_KEY_PREFIX = 'wp_premium_sdk_manifest_';
+
+    /** Suffix of the site transient that remembers failed manifest fetches. */
+    public const FAILURE_CACHE_KEY_SUFFIX = '_failure';
+
+    /** How long a fetched manifest is reused. */
+    public const SUCCESS_TTL = 12 * 3600;
+
+    /**
+     * Wait after the 1st, 2nd, 3rd and 4th+ failure in a row before asking again:
+     * 1h, 3h, 6h, then 12h at most.
+     */
+    public const FAILURE_BACKOFF = [3600, 3 * 3600, 6 * 3600, 12 * 3600];
+
+    /**
+     * How long the failure record itself lives. Longer than the longest wait, so the
+     * count survives between attempts and the wait keeps growing; a day with no
+     * attempt at all starts the count again.
+     */
+    public const FAILURE_RECORD_TTL = 24 * 3600;
 
     private ClientConfig $config;
     private LicenseClient $client;
@@ -78,7 +98,13 @@ class PluginUpdater
     }
 
     /**
-     * Fetch the manifest, using a short-lived transient cache to avoid hammering Nexus.
+     * Fetch the manifest, using a transient cache to avoid hammering Nexus.
+     *
+     * A success is reused for 12 hours. A failure is remembered too, so the next
+     * update check does not repeat it straight away: the site waits 1h, then 3h,
+     * 6h and at most 12h between attempts while the failures continue (longer if
+     * the server sent a longer Retry-After). `$force` (the "check for updates"
+     * button) skips both waits but still records the outcome.
      *
      * @return array<string, mixed>|null
      */
@@ -91,6 +117,12 @@ class PluginUpdater
 
             if (is_array($cached)) {
                 return $cached;
+            }
+
+            $failure = get_site_transient($this->failureCacheKey());
+
+            if (is_array($failure) && (int) ($failure['retry_at'] ?? 0) > time()) {
+                return null;
             }
         }
 
@@ -107,21 +139,62 @@ class PluginUpdater
         try {
             $manifest = $this->client->fetchManifest($licenseKey, $this->config->currentVersion());
         } catch (Exception $e) {
+            $this->recordFailure($e);
+
             return null;
         }
 
-        set_site_transient($cacheKey, $manifest, HOUR_IN_SECONDS * 12);
+        set_site_transient($cacheKey, $manifest, self::SUCCESS_TTL);
+        delete_site_transient($this->failureCacheKey());
 
         return $manifest;
     }
 
+    /**
+     * Forget the cached manifest and any failure backoff — the license changed,
+     * so the next check should ask straight away.
+     */
     public function flush(): void
     {
         delete_site_transient($this->cacheKey());
+        delete_site_transient($this->failureCacheKey());
+    }
+
+    /**
+     * The site transient keys this updater writes, for uninstall.
+     *
+     * @return array<int, string>
+     */
+    public function cacheKeys(): array
+    {
+        return [$this->cacheKey(), $this->failureCacheKey()];
+    }
+
+    private function recordFailure(Exception $e): void
+    {
+        $previous = get_site_transient($this->failureCacheKey());
+        $failures = (is_array($previous) ? (int) ($previous['failures'] ?? 0) : 0) + 1;
+
+        $wait = self::FAILURE_BACKOFF[min($failures, count(self::FAILURE_BACKOFF)) - 1];
+
+        if ($e instanceof ApiException && $e->getRetryAfter() !== null) {
+            $wait = min(max($wait, $e->getRetryAfter()), self::FAILURE_RECORD_TTL);
+        }
+
+        set_site_transient($this->failureCacheKey(), [
+            'failures' => $failures,
+            'retry_at' => time() + $wait,
+            'error_code' => $e instanceof ApiException ? $e->getErrorCode() : '',
+        ], self::FAILURE_RECORD_TTL);
     }
 
     private function cacheKey(): string
     {
         return self::MANIFEST_CACHE_KEY_PREFIX.$this->config->productSlug();
+    }
+
+    private function failureCacheKey(): string
+    {
+        return $this->cacheKey().self::FAILURE_CACHE_KEY_SUFFIX;
     }
 }

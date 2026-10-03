@@ -3,6 +3,7 @@
 namespace VeronaLabs\WpPremiumSdk\Container;
 
 use InvalidArgumentException;
+use Throwable;
 use VeronaLabs\WpPremiumSdk\Account\AccountBootstrap;
 use VeronaLabs\WpPremiumSdk\Account\AccountClient;
 use VeronaLabs\WpPremiumSdk\Account\AccountEndpoints;
@@ -15,6 +16,7 @@ use VeronaLabs\WpPremiumSdk\Http\ApiClient;
 use VeronaLabs\WpPremiumSdk\License\LicenseBootstrap;
 use VeronaLabs\WpPremiumSdk\License\LicenseClient;
 use VeronaLabs\WpPremiumSdk\License\LicenseEndpoints;
+use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\License\LicenseManager;
 use VeronaLabs\WpPremiumSdk\Module\ModuleLoader;
 use VeronaLabs\WpPremiumSdk\Store\PremiumStore;
@@ -35,9 +37,16 @@ use VeronaLabs\WpPremiumSdk\Update\PluginUpdater;
  * After register(), the SDK has hooked its AJAX endpoints, WP update filter,
  * module loader, and OAuth callback handler. Individual services can still
  * be pulled from the provider for use by the host plugin's admin UI.
+ *
+ * The SDK registers no activation, deactivation or uninstall hooks of its own.
+ * The host's uninstall.php calls uninstall() to release the seat and remove
+ * what the SDK stored.
  */
 class PremiumServiceProvider
 {
+    /** Seconds uninstall() waits for Nexus to release the seat. */
+    public const UNINSTALL_TIMEOUT = 5;
+
     private ClientConfig $config;
 
     private string $pluginBasename;
@@ -81,7 +90,7 @@ class PremiumServiceProvider
 
         $this->config = $config;
         $this->pluginBasename = $pluginBasename;
-        $this->encryptor = $encryptor ?? new SodiumEncryptor($config->optionKey().'_cipher');
+        $this->encryptor = $encryptor ?? new SodiumEncryptor($this->cipherOptionKey());
 
         $this->wire();
     }
@@ -91,6 +100,52 @@ class PremiumServiceProvider
         $this->licenseBootstrap->register();
         $this->accountBootstrap->register();
         $this->moduleLoader->register();
+    }
+
+    /**
+     * Remove everything the SDK stored for this site, for the host's uninstall.php.
+     *
+     * First, when `$releaseSeat` is true and a license is stored, it tells Nexus
+     * this site no longer uses its seat — best-effort, with a short timeout, and
+     * never throwing, so a slow or unreachable server cannot hold up the uninstall.
+     * Then it deletes the SDK's option row (license + account sections), the
+     * fallback cipher-key option, and the manifest cache and failure-backoff site
+     * transients.
+     *
+     * OAuth `state` transients are keyed by a random token and cannot be listed
+     * through the WordPress API; they expire on their own within 10 minutes.
+     *
+     * Needs only the autoloader and a ClientConfig: construct the provider and call
+     * this, without register(). On a network, run it once per site inside
+     * switch_to_blog(), with a new provider for each site.
+     *
+     * @return array{removed_remotely: bool, error_code: string|null} Whether Nexus
+     *         released the seat (true when there was none to release or
+     *         `$releaseSeat` is false).
+     */
+    public function uninstall(bool $releaseSeat = true): array
+    {
+        $result = ['removed_remotely' => true, 'error_code' => null];
+        $this->store->resetCache();
+
+        if ($releaseSeat) {
+            try {
+                $result = $this->licenseManager->deactivate(self::UNINSTALL_TIMEOUT);
+            } catch (Throwable $e) {
+                $result = ['removed_remotely' => false, 'error_code' => LicenseErrorCode::UNKNOWN];
+            }
+        }
+
+        delete_option($this->config->optionKey());
+        delete_option($this->cipherOptionKey());
+
+        foreach ($this->pluginUpdater->cacheKeys() as $key) {
+            delete_site_transient($key);
+        }
+
+        $this->store->resetCache();
+
+        return $result;
     }
 
     public function config(): ClientConfig
@@ -126,6 +181,15 @@ class PremiumServiceProvider
     public function store(): PremiumStore
     {
         return $this->store;
+    }
+
+    /**
+     * The option SodiumEncryptor keeps its fallback key in (used when wp-config
+     * has no salts).
+     */
+    private function cipherOptionKey(): string
+    {
+        return $this->config->optionKey().'_cipher';
     }
 
     private function wire(): void

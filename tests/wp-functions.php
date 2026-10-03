@@ -257,3 +257,69 @@ if (! function_exists('wp_remote_retrieve_response_code')) {
         return (int) ($response['response']['code'] ?? 0);
     }
 }
+
+if (! function_exists('wp_remote_retrieve_header')) {
+    function wp_remote_retrieve_header($response, string $header)
+    {
+        foreach ((array) ($response['headers'] ?? []) as $name => $value) {
+            if (strtolower((string) $name) === strtolower($header)) {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+}
+
+if (! function_exists('get_site_transient')) {
+    function get_site_transient(string $key)
+    {
+        return WpStub::$siteTransients[$key] ?? false;
+    }
+}
+
+if (! function_exists('set_site_transient')) {
+    function set_site_transient(string $key, $value, int $ttl = 0): bool
+    {
+        WpStub::$siteTransients[$key] = $value;
+
+        return true;
+    }
+}
+
+if (! function_exists('delete_site_transient')) {
+    function delete_site_transient(string $key): bool
+    {
+        unset(WpStub::$siteTransients[$key]);
+
+        return true;
+    }
+}
+
+if (! function_exists('current_user_can')) {
+    function current_user_can(string $capability): bool
+    {
+        return true;
+    }
+}
+
+if (! function_exists('check_ajax_referer')) {
+    function check_ajax_referer($action = -1, $queryArg = false, bool $stop = true)
+    {
+        return 1;
+    }
+}
+
+if (! function_exists('wp_send_json_success')) {
+    function wp_send_json_success($data = null, ?int $status = null): void
+    {
+        WpStub::$jsonResponses[] = ['success' => true, 'data' => $data, 'status' => $status];
+    }
+}
+
+if (! function_exists('wp_send_json_error')) {
+    function wp_send_json_error($data = null, ?int $status = null): void
+    {
+        WpStub::$jsonResponses[] = ['success' => false, 'data' => $data, 'status' => $status];
+    }
+}

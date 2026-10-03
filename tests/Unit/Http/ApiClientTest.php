@@ -172,6 +172,133 @@ class ApiClientTest extends TestCase
         }
     }
 
+    public function test_error_carries_the_http_status(): void
+    {
+        WpStub::queueJson(403, ['error_code' => 'license_suspended', 'message' => 'Suspended']);
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(403, $e->getHttpStatus());
+            $this->assertSame(403, $e->getCode());
+        }
+    }
+
+    public function test_a_429_without_a_code_is_rate_limited_with_retry_after(): void
+    {
+        WpStub::queueJson(429, ['message' => 'Too Many Attempts.'], ['Retry-After' => '120']);
+
+        try {
+            $this->http->post('/api/v1/license/validate', []);
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::RATE_LIMITED, $e->getErrorCode());
+            $this->assertSame(120, $e->getRetryAfter());
+            $this->assertTrue($e->isTransient());
+        }
+    }
+
+    public function test_a_429_error_page_is_rate_limited(): void
+    {
+        WpStub::$responseQueue[] = [429, '<html>slow down</html>', ['retry-after' => '30']];
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::RATE_LIMITED, $e->getErrorCode());
+            $this->assertSame(30, $e->getRetryAfter());
+        }
+    }
+
+    public function test_a_5xx_error_page_is_a_server_error(): void
+    {
+        WpStub::$responseQueue[] = [502, '<html>Bad Gateway</html>', []];
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::SERVER_ERROR, $e->getErrorCode());
+            $this->assertSame(502, $e->getHttpStatus());
+        }
+    }
+
+    public function test_a_json_5xx_without_a_code_is_a_server_error(): void
+    {
+        WpStub::queueJson(500, ['message' => 'Server Error']);
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::SERVER_ERROR, $e->getErrorCode());
+        }
+    }
+
+    /**
+     * Nexus sends `error_code: null` beside a legacy `code`; the null must not win.
+     */
+    public function test_a_null_error_code_falls_back_to_legacy_code(): void
+    {
+        WpStub::queueJson(403, ['error_code' => null, 'code' => 'wrong_product', 'message' => 'Wrong product']);
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::WRONG_PRODUCT, $e->getErrorCode());
+        }
+    }
+
+    public function test_a_numeric_code_is_not_taken_for_a_reason(): void
+    {
+        WpStub::queueJson(404, ['code' => 404, 'message' => 'Not Found']);
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(LicenseErrorCode::UNKNOWN, $e->getErrorCode());
+        }
+    }
+
+    public function test_an_unknown_server_code_passes_through(): void
+    {
+        WpStub::queueJson(403, ['error_code' => 'something_new', 'message' => 'New']);
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame('something_new', $e->getErrorCode());
+            $this->assertFalse($e->isTransient());
+        }
+    }
+
+    public function test_a_transport_failure_has_status_zero(): void
+    {
+        WpStub::queueError('Connection refused');
+
+        try {
+            $this->http->get('/api/v1/thing');
+            $this->fail('Expected an ApiException.');
+        } catch (ApiException $e) {
+            $this->assertSame(0, $e->getHttpStatus());
+            $this->assertTrue($e->isTransient());
+        }
+    }
+
+    public function test_post_passes_a_custom_timeout(): void
+    {
+        WpStub::queueJson(200, []);
+
+        $this->http->post('/api/v1/thing', [], [], 5);
+
+        $this->assertSame(5, WpStub::$requestLog[0]['args']['timeout']);
+    }
+
     public function test_disables_ssl_verify_for_local_tlds(): void
     {
         $this->assertFalse($this->http->shouldVerifySsl('https://nexus.test'));
