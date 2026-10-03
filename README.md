@@ -354,6 +354,7 @@ Every subsite still counts as its own site (see [Which site is licensed](#which-
 - Updates are network-wide: see [`PluginUpdater`](#pluginupdater).
 - Migration: when the plugin becomes network-activated and no network key exists yet, the main site's stored key is adopted (on the main site or in Network Admin).
 - When the network admin removes the key, the main site's license goes at once and each other subsite's on its next admin load, releasing its seat. When the plugin is network-deactivated instead, subsites keep their licenses as their own.
+- A subsite activated with a key of its own before the plugin was network-activated keeps it: it is not waiting for a seat, and neither its admin load nor `activate_all` / `activate_sites` replaces it. The network admin moves it to the network key with `switch_to_network_key`.
 - A wp-config constant still wins over the network key.
 
 The host's Network Admin page talks to `wp_ajax_{prefix}_network_license` (below).
@@ -389,9 +390,10 @@ Registered on multisite only. Nonce `{ajax_action}_network_license`; capability 
 
 | `sub_action` | Purpose |
 |---|---|
-| `get_status` | `context: "network"`, `is_network_activated`, `source`, `has_key`, `license_key_masked`, `updated_at`; the seat summary `subsites_total`, `subsites_active`, `subsites_waiting`, `seats_max` (0 = unlimited, null = not known yet), `seats_left` (null when unlimited or unknown); and `subsites` (up to 500): `blog_id`, `domain`, `holds_seat`, `is_activated`, `status`, `error_code`, `source`, `site`, `last_success_at`, `auto_activation_error`, `retry_at`. Read from each subsite's row, without asking Nexus. |
-| `activate_all` | Activates every subsite still waiting, each inside `switch_to_blog()` on its own address. Refused with `not_enough_seats` plus `needed` and `left` when the seats cannot cover them all. Returns the seat summary and `results`: `{blog_id, domain, activated, error_code, is_counted}` per subsite; one failure does not stop the rest. |
+| `get_status` | `context: "network"`, `is_network_activated`, `source`, `has_key`, `license_key_masked`, `updated_at`; the seat summary `subsites_total`, `subsites_active`, `subsites_own_key`, `subsites_waiting`, `seats_max` (0 = unlimited, null = not known yet), `seats_left` (null when unlimited or unknown); and `subsites` (up to 500): `blog_id`, `domain`, `holds_seat`, `has_own_key`, `is_activated`, `status`, `error_code`, `source`, `site`, `last_success_at`, `auto_activation_error`, `retry_at`. Read from each subsite's row, without asking Nexus. |
+| `activate_all` | Activates every subsite still waiting (not subsites with a key of their own), each inside `switch_to_blog()` on its own address. Refused with `not_enough_seats` plus `needed` and `left` when the seats cannot cover them all. Returns the seat summary and `results`: `{blog_id, domain, activated, error_code, is_counted}` per subsite; one failure does not stop the rest. |
 | `activate_sites` | Body: `blog_ids` (array or comma-separated). Same as `activate_all` for the picked subsites only. |
+| `switch_to_network_key` | Body: `blog_ids`. Moves the picked subsites that have a key of their own to the network key: each is activated with the network key first, then its own key's seat on its address is released. Others are skipped. Same seat check as `activate_all`; each result also has `released`: `{removed_remotely, error_code}`, or null when the activation failed (the own key then stays). |
 | `save_key` | Body: `license_key`. Activates the main site with it, then stores it network-wide. A refused key (invalid, expired, wrong product …) is not stored; a key with no seat left, or an unreachable server, is stored and `main_site_error_code` says why. |
 | `remove_key` | Deletes the network key and deactivates the main site; other subsites follow on their next admin load. |
 

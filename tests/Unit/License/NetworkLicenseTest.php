@@ -458,6 +458,43 @@ class NetworkLicenseTest extends TestCase
         $this->assertSame(KeySource::MANUAL, $sdk->licenseManager()->getSource());
     }
 
+    public function test_switching_to_the_network_key_activates_first_then_releases_the_own_key(): void
+    {
+        $this->ownKeyOnBlog3();
+        $this->networkKey('NET-KEY-0026', 5, 1);
+        $this->queueActivation();
+        WpStub::queueJson(200, ['success' => true]);
+
+        $response = $this->ajax($this->provider(), 'network_license', 'switch_to_network_key', ['blog_ids' => ['2', '3']]);
+
+        $this->assertTrue($response['success']);
+        $this->assertSame([3], array_column($response['data']['results'], 'blog_id'), 'Blog 2 has no own key.');
+        $this->assertSame(['removed_remotely' => true, 'error_code' => null], $response['data']['results'][0]['released']);
+        $this->assertSame(['/api/v1/license/activate', '/api/v1/license/validate', '/api/v1/license/deactivate'], $this->paths(), 'Activate first, release after.');
+        $this->assertSame('NET-KEY-0026', $this->request(3)['body']['license_key']);
+        $release = $this->request(1)['body'];
+        $this->assertSame('OWN-KEY-0003', $release['license_key']);
+        $this->assertSame('example.com/b', $release['domain']);
+        $this->assertSame(KeySource::NETWORK, WpStub::$blogOptions[3][SdkFixture::OPTION]['license']['source']);
+        $this->assertSame(0, $response['data']['subsites_own_key']);
+    }
+
+    public function test_a_failed_switch_keeps_the_own_key_and_its_seat(): void
+    {
+        $this->ownKeyOnBlog3();
+        $this->networkKey('NET-KEY-0027', 5, 1);
+        WpStub::queueJson(409, ['error_code' => 'activation_limit_reached', 'message' => 'No seats']);
+
+        $response = $this->ajax($this->provider(), 'network_license', 'switch_to_network_key', ['blog_ids' => '3']);
+
+        $result = $response['data']['results'][0];
+        $this->assertFalse($result['activated']);
+        $this->assertSame(LicenseErrorCode::ACTIVATION_LIMIT_REACHED, $result['error_code']);
+        $this->assertNull($result['released']);
+        $this->assertNotContains('/api/v1/license/deactivate', $this->paths());
+        $this->assertSame(KeySource::MANUAL, WpStub::$blogOptions[3][SdkFixture::OPTION]['license']['source']);
+    }
+
     /**
      * Blog 3 activates a key of its own while the plugin is still activated site by
      * site; then the plugin is network-activated and the main site is current again.
