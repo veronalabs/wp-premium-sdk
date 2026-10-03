@@ -38,7 +38,10 @@ final class LicenseErrorCode
     /** Disabled by Nexus (administratively turned off). */
     public const DISABLED = 'disabled';
 
-    /** Activation count has reached max_activations. */
+    /**
+     * More sites are activated than the license allows (activation_count >
+     * max_activations), or this site is not activated and every seat is taken.
+     */
     public const OVER_LIMIT = 'over_limit';
 
     /** No license key stored on this site yet. */
@@ -67,7 +70,13 @@ final class LicenseErrorCode
     /** The key is suspended (server-side rejection during an action). */
     public const LICENSE_SUSPENDED = 'license_suspended';
 
-    /** Too many requests — the caller is rate limited. */
+    /** The key is valid, but for a different product than the one asking. */
+    public const WRONG_PRODUCT = 'wrong_product';
+
+    /** The account access token has expired (sent on an api/v1 401). */
+    public const TOKEN_EXPIRED = 'token_expired';
+
+    /** Too many requests — the caller is rate limited. Carries retry_after when known. */
     public const RATE_LIMITED = 'rate_limited';
 
     /** Nexus encountered an internal error. */
@@ -83,6 +92,12 @@ final class LicenseErrorCode
 
     /** The server responded, but the body was not valid JSON. */
     public const INVALID_RESPONSE = 'invalid_response';
+
+    /**
+     * The account sign-in expired mid-flow (Nexus answered 401 or token_expired).
+     * The SDK has already cleared the session; the host asks the user to sign in again.
+     */
+    public const ACCOUNT_EXPIRED = 'account_expired';
 
     /**
      * All canonical code values, deduplicated.
@@ -107,12 +122,31 @@ final class LicenseErrorCode
             self::DOMAIN_NOT_ALLOWED,
             self::LICENSE_EXPIRED,
             self::LICENSE_SUSPENDED,
+            self::WRONG_PRODUCT,
+            self::TOKEN_EXPIRED,
             self::RATE_LIMITED,
             self::SERVER_ERROR,
             self::UNKNOWN,
             self::NETWORK_ERROR,
             self::INVALID_RESPONSE,
+            self::ACCOUNT_EXPIRED,
         ];
+    }
+
+    /**
+     * Whether a failure says nothing about the license itself: the server could not
+     * be reached, broke, sent something unreadable, or asked us to slow down. Callers
+     * keep their cached license on these and treat every other code as the server's
+     * answer.
+     */
+    public static function isTransient(string $code): bool
+    {
+        return in_array($code, [
+            self::NETWORK_ERROR,
+            self::SERVER_ERROR,
+            self::INVALID_RESPONSE,
+            self::RATE_LIMITED,
+        ], true);
     }
 
     /**

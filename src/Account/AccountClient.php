@@ -76,12 +76,16 @@ class AccountClient
     }
 
     /**
+     * Revoke the access token on Nexus.
+     *
+     * @param  int  $timeout  Seconds to wait; ending a sign-in passes a short one.
+     *
      * @throws Exception
      */
-    public function logout(string $accessToken): array
+    public function logout(string $accessToken, int $timeout = ApiClient::DEFAULT_TIMEOUT): array
     {
         return $this->http->post('/api/v1/auth/logout', [], [
             'Authorization' => 'Bearer '.$accessToken,
-        ]);
+        ], $timeout);
     }
 }

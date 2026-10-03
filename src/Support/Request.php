@@ -53,11 +53,9 @@ class Request
      * every site in such a network as the same one, and a thousand-site network would
      * activate against a single seat.
      *
-     * When the plugin is network-activated, the network owns the licence rather than each
-     * subsite, so every subsite reports the network's own address and the whole network
-     * counts once. That mirrors how the rest of the ecosystem behaves and, more
-     * importantly, matches how the plugin was actually installed: one decision, taken
-     * once, for all of them.
+     * **Every subsite of a network counts as its own site**, whether the plugin is
+     * network-activated or not: each one reports its own `home_url()` and uses its own
+     * seat. Networks that need many seats buy a plan with enough of them.
      *
      * Only the scheme and a leading `www.` are dropped, because neither distinguishes one
      * site from another. A trailing slash goes too, so `example.com/` and `example.com`
@@ -84,42 +82,44 @@ class Request
     }
 
     /**
-     * The installation the licence belongs to: the network when the plugin is activated
-     * across one, otherwise this site alone.
+     * The installation the licence belongs to: always this site's own home address,
+     * on a network as much as anywhere else.
      */
     private static function licensedSiteUrl(): string
     {
-        if (is_multisite() && function_exists('is_plugin_active_for_network')) {
-            if (! function_exists('get_plugins')) {
-                require_once ABSPATH.'wp-admin/includes/plugin.php';
-            }
-
-            $plugin = self::networkActivatedPlugin();
-
-            if ($plugin !== null && is_plugin_active_for_network($plugin)) {
-                return network_home_url();
-            }
-        }
-
         return home_url();
     }
 
     /**
-     * The plugin file to ask about, set by the host plugin at boot.
-     *
-     * Null when the host has not told us, in which case the network question cannot be
-     * answered and this site answers for itself — the safe direction, since it counts
-     * more sites rather than fewer.
+     * A domain or URL reduced to the form used for comparing two of them: lower case,
+     * no scheme, no `www.`, no default port, no trailing dot or slash. Path kept, as in
+     * currentDomain(). Used to tell whether a site on the license is this one.
      */
-    private static ?string $pluginFile = null;
-
-    public static function useNetworkLicenceFor(string $pluginFile): void
+    public static function normaliseDomain(string $domain): string
     {
-        self::$pluginFile = $pluginFile;
+        $domain = strtolower(trim($domain));
+        $domain = (string) preg_replace('#^https?[:/]+#', '', $domain, 1);
+        $domain = (string) preg_replace('#^www\.#', '', $domain, 1);
+
+        $slash = strpos($domain, '/');
+        $host = $slash === false ? $domain : substr($domain, 0, $slash);
+        $path = $slash === false ? '' : substr($domain, $slash);
+
+        $host = (string) preg_replace('#:(80|443)$#', '', $host, 1);
+        $host = rtrim($host, '.');
+
+        return $host.rtrim($path, '/');
     }
 
-    private static function networkActivatedPlugin(): ?string
+    /**
+     * No longer does anything: every subsite now counts as its own site, so there is
+     * no network-wide licence to opt into.
+     *
+     * @deprecated 1.0.0-beta.7 Each subsite is licensed on its own address. Remove the
+     *             call; it will be deleted in a later release.
+     */
+    public static function useNetworkLicenceFor(string $pluginFile): void
     {
-        return self::$pluginFile;
+        // Intentionally empty — kept so hosts that still call it do not fatal.
     }
 }

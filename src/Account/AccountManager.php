@@ -3,8 +3,11 @@
 namespace VeronaLabs\WpPremiumSdk\Account;
 
 use Exception;
+use Throwable;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Encryption\EncryptorInterface;
+use VeronaLabs\WpPremiumSdk\Http\ApiException;
+use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\License\LicenseManager;
 use VeronaLabs\WpPremiumSdk\Store\PremiumStore;
 
@@ -16,10 +19,22 @@ use VeronaLabs\WpPremiumSdk\Store\PremiumStore;
  * 3. activateLicense() → pick a license from the user's Nexus account
  *    and activate it on this site via LicenseManager
  *
- * Access + refresh tokens are encrypted at rest.
+ * The sign-in is a one-time step, not a stored connection: once a license is
+ * activated the session is deleted and everything runs on the license key.
+ * isConnected() therefore means "a sign-in is in progress", and the session also
+ * lapses on its own when the access token expires (24 hours unless Nexus says
+ * otherwise). No refresh token is stored; Nexus does not issue one.
+ *
+ * The access token is encrypted at rest.
  */
 class AccountManager
 {
+    /** How long a sign-in lasts when Nexus does not say: its token lifetime. */
+    public const SESSION_TTL = 86400;
+
+    /** Seconds to wait for Nexus to revoke the token when a sign-in ends. */
+    public const REVOKE_TIMEOUT = 5;
+
     private ClientConfig $config;
     private AccountClient $client;
     private PremiumStore $store;
@@ -85,15 +100,16 @@ class AccountManager
 
         $user = $response['user'] ?? [];
         $accessToken = $response['access_token'];
+        $now = time();
 
         $this->storeSession([
             'access_token' => $this->encryptor->encrypt($accessToken),
-            'refresh_token' => ! empty($response['refresh_token']) ? $this->encryptor->encrypt($response['refresh_token']) : null,
             'user' => [
                 'email' => $user['email'] ?? '',
                 'name' => $user['name'] ?? '',
             ],
-            'connected_at' => time(),
+            'connected_at' => $now,
+            'expires_at' => $this->sessionExpiry($response, $now),
         ]);
 
         // Nexus's exchange-code response doesn't include licenses — fetch them
@@ -125,8 +141,11 @@ class AccountManager
             if ($key !== '') {
                 try {
                     $licenseManager->activate($key);
+                    // Signed in, license picked and activated: the sign-in has
+                    // done its job, so it ends here.
+                    $this->endSignIn();
 
-                    return ['connected' => true, 'licenses' => $licenses];
+                    return ['connected' => false, 'licenses' => $licenses];
                 } catch (Exception $e) {
                     // Activation failed (e.g., max_activations reached). Surface
                     // the single license through the picker UI so the user can
@@ -145,22 +164,78 @@ class AccountManager
         return ['connected' => true, 'licenses' => $licenses];
     }
 
+    /**
+     * Whether a sign-in is in progress: a token is stored and has not expired.
+     * False once a license has been activated (the session is deleted then).
+     */
     public function isConnected(): bool
+    {
+        $session = $this->store->get('account');
+
+        return ! empty($session['access_token']) && ! $this->isExpired($session);
+    }
+
+    /**
+     * The decrypted access token, or null when there is none or it has expired.
+     */
+    public function getAccessToken(): ?string
+    {
+        $session = $this->store->get('account');
+
+        if (empty($session['access_token']) || $this->isExpired($session)) {
+            return null;
+        }
+
+        return $this->encryptor->decrypt($session['access_token']);
+    }
+
+    /**
+     * Whether any sign-in session is stored, expired or not.
+     */
+    public function hasSession(): bool
     {
         $session = $this->store->get('account');
 
         return ! empty($session['access_token']);
     }
 
-    public function getAccessToken(): ?string
+    /**
+     * End the sign-in locally: token, user, pending choice and flash error all go.
+     * Used after a successful activation and when the token turns out to be expired.
+     */
+    public function clearSession(): void
     {
-        $session = $this->store->get('account');
+        $this->store->delete('account');
+    }
 
-        if (empty($session['access_token'])) {
-            return null;
+    /**
+     * End a sign-in that has done its job: revoke the token on Nexus (best-effort,
+     * short timeout — a failure never undoes or fails the activation that came
+     * before), then delete the local session.
+     */
+    public function endSignIn(): void
+    {
+        $token = $this->getAccessToken();
+
+        if ($token) {
+            try {
+                $this->client->logout($token, self::REVOKE_TIMEOUT);
+            } catch (Throwable $e) {
+                // Best-effort — the token also expires on its own.
+            }
         }
 
-        return $this->encryptor->decrypt($session['access_token']);
+        $this->clearSession();
+    }
+
+    /**
+     * Whether an API failure means the sign-in itself has expired (a 401, or
+     * Nexus's `token_expired`), as opposed to some other refusal.
+     */
+    public function isSignInExpired(Throwable $e): bool
+    {
+        return $e instanceof ApiException
+            && ($e->getHttpStatus() === 401 || $e->getErrorCode() === LicenseErrorCode::TOKEN_EXPIRED);
     }
 
     public function logout(): void
@@ -256,5 +331,44 @@ class AccountManager
     private function storeSession(array $data): void
     {
         $this->store->set('account', $data);
+    }
+
+    /**
+     * When the new token stops working: Nexus's `expires_at` (timestamp or date)
+     * or `expires_in` (seconds) when sent, else the default token lifetime.
+     *
+     * @param  array<string, mixed>  $response
+     */
+    private function sessionExpiry(array $response, int $now): int
+    {
+        if (isset($response['expires_in']) && is_numeric($response['expires_in'])) {
+            return $now + (int) $response['expires_in'];
+        }
+
+        if (! empty($response['expires_at'])) {
+            $expiresAt = is_numeric($response['expires_at'])
+                ? (int) $response['expires_at']
+                : strtotime((string) $response['expires_at']);
+
+            if ($expiresAt) {
+                return $expiresAt;
+            }
+        }
+
+        return $now + self::SESSION_TTL;
+    }
+
+    /**
+     * A session stored before expires_at existed lapses a token lifetime after it began.
+     *
+     * @param  array<string, mixed>  $session
+     */
+    private function isExpired(array $session): bool
+    {
+        $expiresAt = isset($session['expires_at'])
+            ? (int) $session['expires_at']
+            : (int) ($session['connected_at'] ?? 0) + self::SESSION_TTL;
+
+        return $expiresAt <= time();
     }
 }
