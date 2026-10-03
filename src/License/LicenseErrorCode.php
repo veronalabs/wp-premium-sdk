@@ -100,6 +100,51 @@ final class LicenseErrorCode
     public const ACCOUNT_EXPIRED = 'account_expired';
 
     /**
+     * The account sign-in in progress was started by another WordPress user; this
+     * user gets the normal activation screen instead of their licenses.
+     */
+    public const SIGN_IN_OTHER_USER = 'sign_in_other_user';
+
+    /**
+     * Network Admin asked to activate more subsites than the license has free seats.
+     * Carries `needed` and `left`.
+     */
+    public const NOT_ENOUGH_SEATS = 'not_enough_seats';
+
+    /**
+     * The key is set by a wp-config constant, so the license page cannot change or
+     * remove it. The host says: "The key is set in wp-config.php. Delete it there."
+     */
+    public const KEY_FROM_CONSTANT = 'key_from_constant';
+
+    /**
+     * The plugin is network-activated: the network admin manages the key, and a
+     * subsite can only view it.
+     */
+    public const NETWORK_MANAGED = 'network_managed';
+
+    /** The site has a license, but it is still registered to another domain. */
+    public const DOMAIN_UNCHANGED = 'domain_unchanged';
+
+    /** File changes are switched off on this site (DISALLOW_FILE_MODS or a filter). */
+    public const FILE_MODS_DISABLED = 'file_mods_disabled';
+
+    /** WordPress needs FTP/SSH credentials to write plugin files. */
+    public const FILESYSTEM_CREDENTIALS_NEEDED = 'filesystem_credentials_needed';
+
+    /** The plugin did not say which tier is installed (ClientConfig `installed_tier`). */
+    public const INSTALLED_TIER_UNKNOWN = 'installed_tier_unknown';
+
+    /** Nexus did not say which tier the license gets (a server older than tier_slug on the manifest). */
+    public const LICENSED_TIER_UNKNOWN = 'licensed_tier_unknown';
+
+    /** The manifest carried no package to install. */
+    public const PACKAGE_UNAVAILABLE = 'package_unavailable';
+
+    /** WordPress could not install the package. */
+    public const INSTALL_FAILED = 'install_failed';
+
+    /**
      * All canonical code values, deduplicated.
      *
      * @return array<int, string>
@@ -130,6 +175,17 @@ final class LicenseErrorCode
             self::NETWORK_ERROR,
             self::INVALID_RESPONSE,
             self::ACCOUNT_EXPIRED,
+            self::SIGN_IN_OTHER_USER,
+            self::NOT_ENOUGH_SEATS,
+            self::KEY_FROM_CONSTANT,
+            self::NETWORK_MANAGED,
+            self::DOMAIN_UNCHANGED,
+            self::FILE_MODS_DISABLED,
+            self::FILESYSTEM_CREDENTIALS_NEEDED,
+            self::INSTALLED_TIER_UNKNOWN,
+            self::LICENSED_TIER_UNKNOWN,
+            self::PACKAGE_UNAVAILABLE,
+            self::INSTALL_FAILED,
         ];
     }
 

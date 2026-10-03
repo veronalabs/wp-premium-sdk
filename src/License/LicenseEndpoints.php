@@ -8,26 +8,46 @@ use VeronaLabs\WpPremiumSdk\Endpoint\AbstractAjaxEndpoint;
 use VeronaLabs\WpPremiumSdk\Feature\FeatureInstaller;
 use VeronaLabs\WpPremiumSdk\Support\Request;
 use VeronaLabs\WpPremiumSdk\Update\PluginUpdater;
+use VeronaLabs\WpPremiumSdk\Update\TierPackageInstaller;
 
 /**
  * AJAX dispatcher for license + update actions.
  *
  * Action: wp_ajax_{prefix}_license
  * Sub-actions: activate, deactivate, get_status, check_updates,
- *              update_feature, install_features, list_sites, remove_site
+ *              update_feature, install_features, list_sites, remove_site,
+ *              move_license, install_tier_package
+ *
+ * When a wp-config constant or the network admin manages the key, this site's
+ * license page can view it but not change it: activate and deactivate answer
+ * `key_from_constant` / `network_managed`, and on a network-managed subsite so do
+ * remove_site and move_license.
  */
 class LicenseEndpoints extends AbstractAjaxEndpoint
 {
     private LicenseManager $manager;
     private PluginUpdater $updater;
     private FeatureInstaller $installer;
+    private KeySource $keySource;
+    private AutoActivator $autoActivator;
+    private TierPackageInstaller $tierInstaller;
 
-    public function __construct(ClientConfig $config, LicenseManager $manager, PluginUpdater $updater, FeatureInstaller $installer)
-    {
+    public function __construct(
+        ClientConfig $config,
+        LicenseManager $manager,
+        PluginUpdater $updater,
+        FeatureInstaller $installer,
+        KeySource $keySource,
+        AutoActivator $autoActivator,
+        TierPackageInstaller $tierInstaller
+    ) {
         parent::__construct($config);
         $this->manager = $manager;
         $this->updater = $updater;
         $this->installer = $installer;
+        $this->keySource = $keySource;
+        $this->autoActivator = $autoActivator;
+        $this->tierInstaller = $tierInstaller;
     }
 
     protected function getActionName(): string
@@ -46,6 +66,8 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
             'install_features' => 'installFeatures',
             'list_sites' => 'listSites',
             'remove_site' => 'removeSite',
+            'move_license' => 'moveLicense',
+            'install_tier_package' => 'installTierPackage',
         ];
     }
 
@@ -59,6 +81,8 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
      */
     protected function activate(): void
     {
+        $this->refuseWhenManaged();
+
         $licenseKey = Request::get('license_key', '');
 
         if (! $licenseKey) {
@@ -84,6 +108,8 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
         // The license is always removed here; `removed_remotely` says whether Nexus
         // released the seat too, and `error_code` why not, so the UI can tell the
         // user to free it from their account.
+        $this->refuseWhenManaged();
+
         $result = $this->manager->deactivate();
         $this->updater->flush();
 
@@ -121,6 +147,8 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
      */
     protected function removeSite(): void
     {
+        $this->refuseWhenNetworkManaged();
+
         $domain = (string) Request::get('domain', '');
 
         if ($domain === '') {
@@ -167,7 +195,92 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
             // The one state the UI should show (see LicenseManager::classify()).
             'state' => $this->manager->classify(),
             'installed_features' => $this->installer->installedModules(),
+            // Where the key came from: "constant" (wp-config), "network" (the
+            // network admin's key) or "manual" (entered here).
+            'source' => $this->manager->getSource() ?? ($this->keySource->managedBy() ?? KeySource::MANUAL),
+            // The last failed automatic activation with a constant or network key
+            // (attempts, last_attempt_at, retry_at, error_code), or null.
+            // Null on a network-managed subsite: seat shortfalls are the network
+            // admin's to see (network get_status), not the subsite admin's.
+            'auto_activation' => $this->keySource->isNetworkManaged() ? null : $this->autoActivator->lastFailure(),
+            // "network" when the plugin is network-activated (the network admin
+            // manages the key and this subsite only views it), "site" otherwise.
+            'context' => $this->keySource->context(),
+            'is_network_managed' => $this->keySource->isNetworkManaged(),
+            // {was, now} when this site's domain is not the one the license was
+            // activated on (a staging clone or a move), else null.
+            'domain_changed' => $this->manager->domainChange(),
+            // {installed, licensed} when the cached manifest licenses another tier
+            // than the installed build, else null.
+            'tier_mismatch' => $this->tierInstaller->tierMismatch(),
         ]);
+    }
+
+    /**
+     * Move the license to this site's current domain (see domain_changed): activate
+     * here, then — only once that worked — release the old domain's seat. Optional
+     * body `release_old` ("1" / "0") overrides the default, which releases the old
+     * domain only when Nexus counts the new one as a seat.
+     *
+     * @throws Exception When there is nothing to move or the activation fails; the
+     *                   old domain then keeps its seat.
+     */
+    protected function moveLicense(): void
+    {
+        $this->refuseWhenNetworkManaged();
+
+        $releaseOld = Request::get('release_old', '');
+        $releaseOld = $releaseOld === '' ? null : in_array((string) $releaseOld, ['1', 'true'], true);
+
+        $result = $this->manager->moveLicense($releaseOld);
+        $this->updater->flush();
+
+        $this->successResponse($result);
+    }
+
+    /**
+     * Install the licensed tier's package when it is not the installed build's tier.
+     * Needs the `install_plugins` capability on top of the endpoint's own.
+     *
+     * @throws Exception With `file_mods_disabled`, `filesystem_credentials_needed`,
+     *                   `installed_tier_unknown`, `licensed_tier_unknown`,
+     *                   `package_unavailable`, `install_failed`, or Nexus's code.
+     */
+    protected function installTierPackage(): void
+    {
+        if (! current_user_can('install_plugins')) {
+            $this->errorResponse(__('You do not have permission.', $this->config->textDomain()), 'forbidden');
+
+            return;
+        }
+
+        $this->successResponse($this->tierInstaller->install());
+    }
+
+    /**
+     * @throws LicenseActionException When a constant or the network admin manages the key.
+     */
+    private function refuseWhenManaged(): void
+    {
+        $code = $this->keySource->refusalCode();
+
+        if ($code === LicenseErrorCode::KEY_FROM_CONSTANT) {
+            throw new LicenseActionException($code, __('The license key is set in wp-config.php. Change or delete it there.', $this->config->textDomain()));
+        }
+
+        if ($code !== null) {
+            $this->refuseWhenNetworkManaged();
+        }
+    }
+
+    /**
+     * @throws LicenseActionException On a subsite of a network-activated plugin.
+     */
+    private function refuseWhenNetworkManaged(): void
+    {
+        if ($this->keySource->isNetworkManaged()) {
+            throw new LicenseActionException(LicenseErrorCode::NETWORK_MANAGED, __('The license is managed by your network admin.', $this->config->textDomain()));
+        }
     }
 
     protected function checkUpdates(): void

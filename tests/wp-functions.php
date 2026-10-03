@@ -299,7 +299,7 @@ if (! function_exists('delete_site_transient')) {
 if (! function_exists('current_user_can')) {
     function current_user_can(string $capability): bool
     {
-        return true;
+        return ! in_array($capability, WpStub::$deniedCapabilities, true);
     }
 }
 
@@ -321,5 +321,153 @@ if (! function_exists('wp_send_json_error')) {
     function wp_send_json_error($data = null, ?int $status = null): void
     {
         WpStub::$jsonResponses[] = ['success' => false, 'data' => $data, 'status' => $status];
+    }
+}
+
+if (! function_exists('add_action')) {
+    function add_action(string $tag, callable $callback, int $priority = 10, int $acceptedArgs = 1): bool
+    {
+        return add_filter($tag, $callback, $priority, $acceptedArgs);
+    }
+}
+
+if (! function_exists('get_site_option')) {
+    function get_site_option(string $key, $default = false)
+    {
+        return WpStub::$siteOptions[$key] ?? $default;
+    }
+}
+
+if (! function_exists('update_site_option')) {
+    function update_site_option(string $key, $value): bool
+    {
+        WpStub::$siteOptions[$key] = $value;
+
+        return true;
+    }
+}
+
+if (! function_exists('delete_site_option')) {
+    function delete_site_option(string $key): bool
+    {
+        unset(WpStub::$siteOptions[$key]);
+
+        return true;
+    }
+}
+
+if (! function_exists('is_main_site')) {
+    function is_main_site(): bool
+    {
+        return WpStub::$isMainSite;
+    }
+}
+
+if (! function_exists('get_sites')) {
+    function get_sites(array $args = []): array
+    {
+        return array_keys(WpStub::$blogHomeUrls);
+    }
+}
+
+if (! function_exists('get_blog_option')) {
+    function get_blog_option(int $blogId, string $key, $default = false)
+    {
+        if ($blogId === WpStub::$currentBlogId) {
+            return WpStub::$options[$key] ?? $default;
+        }
+
+        return WpStub::$blogOptions[$blogId][$key] ?? $default;
+    }
+}
+
+if (! function_exists('get_home_url')) {
+    function get_home_url(?int $blogId = null, string $path = ''): string
+    {
+        if ($blogId === null || $blogId === WpStub::$currentBlogId) {
+            return WpStub::$homeUrl.$path;
+        }
+
+        return (WpStub::$blogHomeUrls[$blogId] ?? WpStub::$homeUrl).$path;
+    }
+}
+
+if (! function_exists('get_current_user_id')) {
+    function get_current_user_id(): int
+    {
+        return WpStub::$currentUserId;
+    }
+}
+
+if (! function_exists('get_main_site_id')) {
+    function get_main_site_id(): int
+    {
+        return 1;
+    }
+}
+
+if (! function_exists('get_current_blog_id')) {
+    function get_current_blog_id(): int
+    {
+        return WpStub::$currentBlogId;
+    }
+}
+
+if (! function_exists('switch_to_blog')) {
+    function switch_to_blog(int $blogId): bool
+    {
+        WpStub::switchBlog($blogId, true);
+
+        return true;
+    }
+}
+
+if (! function_exists('restore_current_blog')) {
+    function restore_current_blog(): bool
+    {
+        $previous = array_pop(WpStub::$blogStack);
+
+        if ($previous === null) {
+            return false;
+        }
+
+        $home = $previous['home'];
+        WpStub::switchBlog($previous['blog']);
+        WpStub::$homeUrl = $home;
+        WpStub::$isMainSite = $previous['main'];
+
+        return true;
+    }
+}
+
+if (! function_exists('wp_is_file_mod_allowed')) {
+    function wp_is_file_mod_allowed(string $context): bool
+    {
+        return WpStub::$fileModsAllowed;
+    }
+}
+
+if (! function_exists('get_filesystem_method')) {
+    function get_filesystem_method(array $args = [], $context = '', bool $allowRelaxedFileOwnership = false): string
+    {
+        return WpStub::$filesystemMethod;
+    }
+}
+
+if (! function_exists('request_filesystem_credentials')) {
+    function request_filesystem_credentials($formPostUrl, $type = '', $error = false, $context = '', $extraFields = null, $allowRelaxedFileOwnership = false)
+    {
+        if (WpStub::$filesystemCredentials === false) {
+            echo '<form>FTP credentials</form>';
+        }
+
+        return WpStub::$filesystemCredentials;
+    }
+}
+
+if (! function_exists('WP_Filesystem')) {
+    function WP_Filesystem($args = false, $context = false, $allowRelaxedFileOwnership = false): bool
+    {
+        return $args !== false;
     }
 }

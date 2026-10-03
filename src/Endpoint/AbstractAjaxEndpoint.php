@@ -7,6 +7,7 @@ use Throwable;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Http\ApiException;
 use VeronaLabs\WpPremiumSdk\License\ActivationVetoedException;
+use VeronaLabs\WpPremiumSdk\License\LicenseActionException;
 
 /**
  * Base class for WP AJAX action dispatchers.
@@ -33,7 +34,7 @@ abstract class AbstractAjaxEndpoint
 
     public function dispatch(): void
     {
-        if (! current_user_can('manage_options')) {
+        if (! current_user_can($this->requiredCapability())) {
             $this->errorResponse(__('You do not have permission.', $this->config->textDomain()), 'forbidden');
 
             return;
@@ -59,7 +60,9 @@ abstract class AbstractAjaxEndpoint
             // Forward the specific, machine-readable code from an ApiException so
             // the client can map it to a translatable message; fall back to the
             // endpoint's generic code for any other throwable.
-            $code = $e instanceof ApiException ? $e->getErrorCode() : $this->getErrorCode();
+            $code = $e instanceof ApiException || $e instanceof LicenseActionException
+                ? $e->getErrorCode()
+                : $this->getErrorCode();
             // Pass through a `renewal` block Nexus attaches to the error (e.g. an
             // expired key still carries the renewal coupon) so the UI can offer
             // it even though the action failed.
@@ -80,8 +83,19 @@ abstract class AbstractAjaxEndpoint
                 $extra['removed_remotely'] = $e->removedRemotely();
                 $extra['rollback_error_code'] = $e->rollbackErrorCode();
             }
+            if ($e instanceof LicenseActionException) {
+                $extra = array_merge($extra, $e->getExtra());
+            }
             $this->errorResponse($e->getMessage(), $code, 400, $extra);
         }
+    }
+
+    /**
+     * The capability every sub-action needs. Network-wide endpoints raise it.
+     */
+    protected function requiredCapability(): string
+    {
+        return 'manage_options';
     }
 
     /**

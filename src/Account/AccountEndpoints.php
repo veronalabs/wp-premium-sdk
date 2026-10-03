@@ -60,6 +60,10 @@ class AccountEndpoints extends AbstractAjaxEndpoint
 
     protected function logout(): void
     {
+        if ($this->refuseOtherUsersSignIn()) {
+            return;
+        }
+
         $this->manager->logout();
         $this->successResponse(['connected' => false]);
     }
@@ -79,6 +83,10 @@ class AccountEndpoints extends AbstractAjaxEndpoint
      */
     protected function fetchLicenses(): void
     {
+        if ($this->refuseOtherUsersSignIn()) {
+            return;
+        }
+
         $token = $this->manager->getAccessToken();
 
         if (! $token) {
@@ -127,6 +135,10 @@ class AccountEndpoints extends AbstractAjaxEndpoint
      */
     protected function activateLicense(): void
     {
+        if ($this->refuseOtherUsersSignIn()) {
+            return;
+        }
+
         $licenseKey = Request::get('license_key', '');
 
         if ($licenseKey === '') {
@@ -144,5 +156,25 @@ class AccountEndpoints extends AbstractAjaxEndpoint
         $this->manager->endSignIn();
 
         $this->successResponse(['license' => $data]);
+    }
+
+    /**
+     * Another admin's sign-in is in progress: this user gets the normal activation
+     * screen, never that user's licenses.
+     *
+     * @return bool Whether the call was refused (the response is sent).
+     */
+    private function refuseOtherUsersSignIn(): bool
+    {
+        if (! $this->manager->isSignInOfOtherUser()) {
+            return false;
+        }
+
+        $this->errorResponse(
+            __('Another administrator is signing in to the account.', $this->config->textDomain()),
+            LicenseErrorCode::SIGN_IN_OTHER_USER
+        );
+
+        return true;
     }
 }
