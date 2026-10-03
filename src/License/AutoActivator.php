@@ -23,6 +23,9 @@ use VeronaLabs\WpPremiumSdk\Support\Request;
  * section of the store, and a new key starts it over. The key itself is never
  * logged, stored in the record, or sent anywhere but Nexus.
  *
+ * A subsite activated with a key of its own before the plugin was network-activated
+ * keeps it: the network key never replaces it here.
+ *
  * On a network-activated plugin seats are not handed out in visit order: a subsite
  * activates itself only while NetworkLicense::seatsAllowAutoActivation() says so.
  * Otherwise nothing happens here, no failure is recorded, and the subsite's admin
@@ -104,8 +107,16 @@ class AutoActivator
         $network = $this->keySource->network();
         $blogId = (int) get_current_blog_id();
 
-        if ($network !== null && $this->keySource->isNetworkManaged() && ! $network->seatsAllowAutoActivation($blogId)) {
-            return;
+        if ($network !== null && $this->keySource->isNetworkManaged()) {
+            // A key this subsite entered itself, before the plugin was network-activated,
+            // stays: the network key does not replace it.
+            if ($provided['source'] === KeySource::NETWORK && $this->manager->isActivated() && $this->manager->getSource() === KeySource::MANUAL) {
+                return;
+            }
+
+            if (! $network->seatsAllowAutoActivation($blogId)) {
+                return;
+            }
         }
 
         $fingerprint = $this->fingerprint($provided['key']);

@@ -92,8 +92,10 @@ class Request
 
     /**
      * A domain or URL reduced to the form used for comparing two of them: lower case,
-     * no scheme, no `www.`, no default port, no trailing dot or slash. Path kept, as in
-     * currentDomain(). Used to tell whether a site on the license is this one.
+     * no scheme, no `www.`, no port, no trailing dot or slash. Path kept, as in
+     * currentDomain(), which drops the port too — so `localhost:8890/alpha` compares
+     * equal to the `localhost/alpha` a site activated with. Used to tell whether a
+     * site on the license is this one.
      */
     public static function normaliseDomain(string $domain): string
     {
@@ -105,7 +107,7 @@ class Request
         $host = $slash === false ? $domain : substr($domain, 0, $slash);
         $path = $slash === false ? '' : substr($domain, $slash);
 
-        $host = (string) preg_replace('#:(80|443)$#', '', $host, 1);
+        $host = (string) preg_replace('#:\d+$#', '', $host, 1);
         $host = rtrim($host, '.');
 
         return $host.rtrim($path, '/');

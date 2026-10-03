@@ -161,7 +161,11 @@ class NetworkLicense
      * Each subsite's license as its own option row has it, read straight from the
      * rows without asking Nexus. The raw key never leaves the row.
      *
-     * @return array<int, array{blog_id: int, domain: string, holds_seat: bool, is_activated: bool, status: string, error_code: string, source: string, site: mixed, last_success_at: mixed, auto_activation_error: string|null, retry_at: int|null, license: array<string, mixed>}>
+     * `has_own_key` marks a subsite activated with a key of its own (entered on its
+     * license page before the plugin was network-activated). It keeps that key: it is
+     * not waiting for a network seat, and nothing replaces its key with the network's.
+     *
+     * @return array<int, array{blog_id: int, domain: string, holds_seat: bool, has_own_key: bool, is_activated: bool, status: string, error_code: string, source: string, site: mixed, last_success_at: mixed, auto_activation_error: string|null, retry_at: int|null, license: array<string, mixed>}>
      */
     public function subsites(int $limit = 500): array
     {
@@ -184,6 +188,7 @@ class NetworkLicense
                 'blog_id' => $blogId,
                 'domain' => $domain,
                 'holds_seat' => $this->holdsSeat($license, $domain),
+                'has_own_key' => self::hasOwnKey($license),
                 'is_activated' => ! empty($license['license_key']),
                 'status' => (string) ($license['status'] ?? ''),
                 'error_code' => (string) ($license['error_code'] ?? ''),
@@ -202,27 +207,31 @@ class NetworkLicense
     /**
      * How the network stands on seats:
      * - `subsites_total`, `subsites_active` (holding an activation of the network's
-     *   key on their own domain) and `subsites_waiting` (the rest);
+     *   key on their own domain), `subsites_own_key` (activated with a key of their
+     *   own, which they keep) and `subsites_waiting` (the rest);
      * - `seats_max` (0 = unlimited, null = not known yet) and `seats_left` (null when
      *   unlimited or not known), from the freshest answer any subsite got from Nexus.
      *
      * @param  array<int, array<string, mixed>>|null  $subsites  subsites(), when already read.
-     * @return array{subsites_total: int, subsites_active: int, subsites_waiting: int, seats_max: int|null, seats_left: int|null}
+     * @return array{subsites_total: int, subsites_active: int, subsites_own_key: int, subsites_waiting: int, seats_max: int|null, seats_left: int|null}
      */
     public function seatSummary(?array $subsites = null): array
     {
         $subsites = $subsites ?? $this->subsites();
         $active = 0;
+        $ownKey = 0;
         $freshest = null;
 
         foreach ($subsites as $subsite) {
             if ($subsite['holds_seat']) {
                 $active++;
+            } elseif ($subsite['has_own_key']) {
+                $ownKey++;
             }
 
             $license = $subsite['license'];
 
-            if ($this->isNetworkLicense($license)
+            if (self::isNetworkLicense($license)
                 && ($freshest === null || (int) ($license['last_success_at'] ?? 0) > (int) ($freshest['last_success_at'] ?? 0))) {
                 $freshest = $license;
             }
@@ -234,7 +243,8 @@ class NetworkLicense
         return [
             'subsites_total' => count($subsites),
             'subsites_active' => $active,
-            'subsites_waiting' => count($subsites) - $active,
+            'subsites_own_key' => $ownKey,
+            'subsites_waiting' => count($subsites) - $active - $ownKey,
             'seats_max' => $max,
             'seats_left' => $left,
         ];
@@ -302,6 +312,37 @@ class NetworkLicense
     }
 
     /**
+     * The subsites still waiting for a seat of the network key: neither holding one
+     * nor activated with a key of their own.
+     *
+     * @param  array<int, array<string, mixed>>  $subsites  subsites()
+     * @return array<int, int> Their blog IDs.
+     */
+    public static function waitingBlogIds(array $subsites): array
+    {
+        $ids = [];
+
+        foreach ($subsites as $subsite) {
+            if (! $subsite['holds_seat'] && ! $subsite['has_own_key']) {
+                $ids[] = (int) $subsite['blog_id'];
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Whether a stored license section is an activation with a key the site entered
+     * itself, rather than the network's or the wp-config constant's.
+     *
+     * @param  array<string, mixed>  $license
+     */
+    public static function hasOwnKey(array $license): bool
+    {
+        return ! empty($license['license_key']) && ! self::isNetworkLicense($license);
+    }
+
+    /**
      * A subsite holds a seat of the network key when its row carries an activation
      * that came from the network (or the wp-config constant) on its own domain.
      *
@@ -309,7 +350,7 @@ class NetworkLicense
      */
     private function holdsSeat(array $license, string $domain): bool
     {
-        if (empty($license['license_key']) || ! $this->isNetworkLicense($license)) {
+        if (empty($license['license_key']) || ! self::isNetworkLicense($license)) {
             return false;
         }
 
@@ -321,7 +362,7 @@ class NetworkLicense
     /**
      * @param  array<string, mixed>  $license
      */
-    private function isNetworkLicense(array $license): bool
+    private static function isNetworkLicense(array $license): bool
     {
         return in_array($license['source'] ?? '', [KeySource::NETWORK, KeySource::CONSTANT], true);
     }
