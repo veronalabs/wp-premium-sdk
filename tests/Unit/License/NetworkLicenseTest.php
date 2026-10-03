@@ -6,6 +6,7 @@ use PHPUnit\Framework\TestCase;
 use VeronaLabs\WpPremiumSdk\License\KeySource;
 use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\Tests\Support\BuildsSdk;
+use VeronaLabs\WpPremiumSdk\Tests\Support\SdkFixture;
 use VeronaLabs\WpPremiumSdk\Tests\WpStub;
 
 /**
@@ -26,7 +27,7 @@ class NetworkLicenseTest extends TestCase
         WpStub::reset();
         $_POST = [];
         WpStub::$isMultisite = true;
-        WpStub::$networkActivatedPlugins = [self::PLUGIN];
+        WpStub::$networkActivatedPlugins = [SdkFixture::PLUGIN];
         WpStub::$blogHomeUrls = [1 => 'https://example.com', 2 => 'https://shop.example.com', 3 => 'https://example.com/b'];
     }
 
@@ -98,7 +99,7 @@ class NetworkLicenseTest extends TestCase
         $this->assertSame('shop.example.com', $activate['domain']);
         $this->assertSame('https://shop.example.com', $activate['site_url']);
         $this->assertSame(KeySource::NETWORK, $sdk->licenseManager()->getSource());
-        $this->assertArrayHasKey('license', WpStub::$options[self::OPTION], 'The activation is kept per site.');
+        $this->assertArrayHasKey('license', WpStub::$options[SdkFixture::OPTION], 'The activation is kept per site.');
     }
 
     public function test_without_seats_for_every_subsite_nothing_happens_on_its_own(): void
@@ -190,7 +191,7 @@ class NetworkLicenseTest extends TestCase
     public function test_network_get_status_reports_seats_and_each_subsite(): void
     {
         $this->networkKey('NET-KEY-0009', 2, 1);
-        WpStub::$blogOptions[3][self::OPTION] = ['auto_activation' => ['attempts' => 2, 'retry_at' => 123, 'error_code' => 'activation_limit_reached']];
+        WpStub::$blogOptions[3][SdkFixture::OPTION] = ['auto_activation' => ['attempts' => 2, 'retry_at' => 123, 'error_code' => 'activation_limit_reached']];
 
         $response = $this->ajax($this->provider(), 'network_license', 'get_status');
         $data = $response['data'];
@@ -240,7 +241,7 @@ class NetworkLicenseTest extends TestCase
         $this->assertSame('shop.example.com', $this->request(4)['body']['domain']);
         $this->assertSame('example.com/b', $this->request(2)['body']['domain']);
         $this->assertSame(1, WpStub::$currentBlogId, 'Back on the main site.');
-        $this->assertSame('example.com/b', WpStub::$blogOptions[3][self::OPTION]['license']['activated_domain']);
+        $this->assertSame('example.com/b', WpStub::$blogOptions[3][SdkFixture::OPTION]['license']['activated_domain']);
         $this->assertSame(3, $response['data']['subsites_active']);
     }
 
@@ -255,7 +256,7 @@ class NetworkLicenseTest extends TestCase
         $this->assertTrue($response['success']);
         $this->assertSame([3], array_column($response['data']['results'], 'blog_id'));
         $this->assertSame('example.com/b', $this->request(2)['body']['domain']);
-        $this->assertArrayNotHasKey(self::OPTION, WpStub::$blogOptions[2] ?? []);
+        $this->assertArrayNotHasKey(SdkFixture::OPTION, WpStub::$blogOptions[2] ?? []);
     }
 
     public function test_a_failed_subsite_is_reported_without_stopping_the_rest(): void
@@ -278,14 +279,14 @@ class NetworkLicenseTest extends TestCase
 
         $transient = $this->provider()->pluginUpdater()->injectPluginUpdate((object) ['response' => []]);
 
-        $this->assertArrayHasKey(self::PLUGIN, $transient->response, 'A subsite without a seat still sees the update.');
+        $this->assertArrayHasKey(SdkFixture::PLUGIN, $transient->response, 'A subsite without a seat still sees the update.');
         $this->assertStringContainsString('license_key=NET-KEY-0014', WpStub::$requestLog[count(WpStub::$requestLog) - 1]['url']);
     }
 
     public function test_no_update_when_the_main_site_is_not_licensed(): void
     {
         $this->networkKey('NET-KEY-0015', 1, 1);
-        WpStub::$options[self::OPTION]['license']['status'] = 'expired';
+        WpStub::$options[SdkFixture::OPTION]['license']['status'] = 'expired';
         WpStub::switchBlog(2);
         $calls = count(WpStub::$requestLog);
 
@@ -339,7 +340,7 @@ class NetworkLicenseTest extends TestCase
         WpStub::$networkActivatedPlugins = [];
         $this->queueActivation();
         $this->provider()->licenseManager()->activate('MAIN-KEY-0001');
-        WpStub::$networkActivatedPlugins = [self::PLUGIN];
+        WpStub::$networkActivatedPlugins = [SdkFixture::PLUGIN];
         $calls = count(WpStub::$requestLog);
 
         $sdk = $this->provider();
@@ -356,7 +357,7 @@ class NetworkLicenseTest extends TestCase
         WpStub::switchBlog(2);
         $this->queueActivation();
         $this->provider()->licenseManager()->activate('SUB-KEY-0001');
-        WpStub::$networkActivatedPlugins = [self::PLUGIN];
+        WpStub::$networkActivatedPlugins = [SdkFixture::PLUGIN];
 
         $sdk = $this->provider();
         $sdk->autoActivator()->run();
@@ -384,7 +385,7 @@ class NetworkLicenseTest extends TestCase
         $this->provider()->networkLicense()->setKey('NET-KEY-0020');
 
         $this->assertArrayHasKey(self::NETWORK_OPTION.'_cipher', WpStub::$siteOptions);
-        $this->assertArrayNotHasKey(self::OPTION.'_network_cipher', WpStub::$options);
+        $this->assertArrayNotHasKey(SdkFixture::OPTION.'_network_cipher', WpStub::$options);
 
         // Another subsite has its own options table but reads the same key.
         WpStub::switchBlog(2);

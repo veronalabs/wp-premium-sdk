@@ -7,6 +7,7 @@ use VeronaLabs\WpPremiumSdk\License\AutoActivator;
 use VeronaLabs\WpPremiumSdk\License\KeySource;
 use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\Tests\Support\BuildsSdk;
+use VeronaLabs\WpPremiumSdk\Tests\Support\SdkFixture;
 use VeronaLabs\WpPremiumSdk\Tests\WpStub;
 
 /**
@@ -117,7 +118,7 @@ class LicenseKeyConstantTest extends TestCase
         $this->provider(['license_key_constant' => 'SDK_TEST_KEY_SECRET'])->autoActivator()->run();
 
         $this->assertStringNotContainsString('CONST-SECRET-9999', serialize(WpStub::$options));
-        $this->assertArrayHasKey(AutoActivator::SECTION, WpStub::$options[self::OPTION]);
+        $this->assertArrayHasKey(AutoActivator::SECTION, WpStub::$options[SdkFixture::OPTION]);
     }
 
     public function test_success_clears_the_retry_record(): void
@@ -247,6 +248,6 @@ class LicenseKeyConstantTest extends TestCase
      */
     private function expireWait(): void
     {
-        WpStub::$options[self::OPTION][AutoActivator::SECTION]['retry_at'] = time() - 1;
+        WpStub::$options[SdkFixture::OPTION][AutoActivator::SECTION]['retry_at'] = time() - 1;
     }
 }

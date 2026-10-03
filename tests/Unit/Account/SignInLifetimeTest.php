@@ -6,6 +6,7 @@ use PHPUnit\Framework\TestCase;
 use VeronaLabs\WpPremiumSdk\Container\PremiumServiceProvider;
 use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\Tests\Support\BuildsSdk;
+use VeronaLabs\WpPremiumSdk\Tests\Support\SdkFixture;
 use VeronaLabs\WpPremiumSdk\Tests\WpStub;
 
 /**
@@ -42,7 +43,7 @@ class SignInLifetimeTest extends TestCase
         WpStub::$currentUserId = 7;
         $this->signIn($this->provider());
 
-        $this->assertSame(7, WpStub::$options[self::OPTION]['account']['user_id']);
+        $this->assertSame(7, WpStub::$options[SdkFixture::OPTION]['account']['user_id']);
     }
 
     public function test_activating_by_key_ends_the_sign_in(): void
@@ -54,7 +55,7 @@ class SignInLifetimeTest extends TestCase
 
         $sdk->licenseManager()->activate('KEY-001');
 
-        $this->assertArrayNotHasKey('account', WpStub::$options[self::OPTION]);
+        $this->assertArrayNotHasKey('account', WpStub::$options[SdkFixture::OPTION]);
         $this->assertStringContainsString('/logout', WpStub::$requestLog[count(WpStub::$requestLog) - 1]['url'], 'The token is revoked.');
         $this->assertFalse($this->provider()->accountManager()->isConnected());
     }
@@ -69,7 +70,7 @@ class SignInLifetimeTest extends TestCase
         $response = $this->ajax($sdk, 'license', 'activate', ['license_key' => 'KEY-001']);
 
         $this->assertTrue($response['success']);
-        $this->assertArrayNotHasKey('account', WpStub::$options[self::OPTION]);
+        $this->assertArrayNotHasKey('account', WpStub::$options[SdkFixture::OPTION]);
     }
 
     public function test_signing_out_deletes_the_session(): void
@@ -81,18 +82,18 @@ class SignInLifetimeTest extends TestCase
         $response = $this->ajax($sdk, 'account', 'logout');
 
         $this->assertFalse($response['data']['connected']);
-        $this->assertArrayNotHasKey(self::OPTION, WpStub::$options);
+        $this->assertArrayNotHasKey(SdkFixture::OPTION, WpStub::$options);
     }
 
     public function test_an_expired_session_is_deleted_when_read_without_any_401(): void
     {
         $this->signIn($this->provider());
-        WpStub::$options[self::OPTION]['account']['expires_at'] = time() - 1;
+        WpStub::$options[SdkFixture::OPTION]['account']['expires_at'] = time() - 1;
         $calls = count(WpStub::$requestLog);
 
         $this->assertFalse($this->provider()->accountManager()->isConnected());
 
-        $this->assertArrayNotHasKey(self::OPTION, WpStub::$options, 'Gone from the database, not just reported false.');
+        $this->assertArrayNotHasKey(SdkFixture::OPTION, WpStub::$options, 'Gone from the database, not just reported false.');
         $this->assertCount($calls, WpStub::$requestLog);
     }
 
@@ -119,7 +120,7 @@ class SignInLifetimeTest extends TestCase
         }
 
         $this->assertCount($calls, WpStub::$requestLog);
-        $this->assertArrayHasKey('account', WpStub::$options[self::OPTION], 'The owner\'s sign-in is untouched.');
+        $this->assertArrayHasKey('account', WpStub::$options[SdkFixture::OPTION], 'The owner\'s sign-in is untouched.');
 
         WpStub::$currentUserId = 1;
         $this->assertTrue($this->provider()->accountManager()->isConnected());

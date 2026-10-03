@@ -5,6 +5,7 @@ namespace VeronaLabs\WpPremiumSdk\Tests\Unit\License;
 use PHPUnit\Framework\TestCase;
 use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\Tests\Support\BuildsSdk;
+use VeronaLabs\WpPremiumSdk\Tests\Support\SdkFixture;
 use VeronaLabs\WpPremiumSdk\Tests\WpStub;
 
 /**
@@ -28,7 +29,7 @@ class DomainChangeTest extends TestCase
 
         $sdk->licenseManager()->activate('KEY-001');
 
-        $this->assertSame('example.com', WpStub::$options[self::OPTION]['license']['activated_domain']);
+        $this->assertSame('example.com', WpStub::$options[SdkFixture::OPTION]['license']['activated_domain']);
         $this->assertSame('example.com', $sdk->licenseManager()->getLicenseData()['activated_domain']);
         $this->assertNull($sdk->licenseManager()->domainChange());
     }
@@ -75,7 +76,7 @@ class DomainChangeTest extends TestCase
     public function test_a_license_stored_before_the_field_learns_it_from_a_domain_check(): void
     {
         $this->activateOn('https://example.com');
-        unset(WpStub::$options[self::OPTION]['license']['activated_domain']);
+        unset(WpStub::$options[SdkFixture::OPTION]['license']['activated_domain']);
 
         $sdk = $this->provider();
         $this->assertNull($sdk->licenseManager()->domainChange());
@@ -83,7 +84,7 @@ class DomainChangeTest extends TestCase
         WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
         $sdk->licenseManager()->validate();
 
-        $this->assertSame('example.com', WpStub::$options[self::OPTION]['license']['activated_domain']);
+        $this->assertSame('example.com', WpStub::$options[SdkFixture::OPTION]['license']['activated_domain']);
     }
 
     public function test_move_license_activates_here_then_releases_the_old_domain(): void
