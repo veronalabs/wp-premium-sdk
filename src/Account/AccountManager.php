@@ -217,6 +217,16 @@ class AccountManager
     }
 
     /**
+     * Always false: the sign-in belongs to the site, so no admin is shut out of it.
+     *
+     * @deprecated Kept so hosts that still call it keep working.
+     */
+    public function isSignInOfOtherUser(): bool
+    {
+        return false;
+    }
+
+    /**
      * End the sign-in locally: token, user, pending choice and flash error all go.
      * Used after a successful activation and when the token turns out to be expired.
      */

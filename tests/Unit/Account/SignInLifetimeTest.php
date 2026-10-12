@@ -108,6 +108,8 @@ class SignInLifetimeTest extends TestCase
         $this->assertNotNull($sdk->accountManager()->getUser());
         $this->assertNotNull($sdk->accountManager()->getPendingChoice());
 
+        $this->assertFalse($sdk->accountManager()->isSignInOfOtherUser());
+
         $status = $this->ajax($sdk, 'account', 'get_status');
         $this->assertTrue($status['data']['connected']);
         $this->assertNotNull($status['data']['user']);
