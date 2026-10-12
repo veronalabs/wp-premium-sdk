@@ -22,6 +22,12 @@ class LicenseManager
     /** Warn when a license expires within this many days. */
     public const EXPIRY_WARNING_DAYS = 14;
 
+    /** Seconds the license page waits between two checks with Nexus. */
+    public const MIN_REFRESH_INTERVAL = 60;
+
+    /** The longest `Retry-After` wait honoured, in seconds. */
+    public const MAX_RETRY_WAIT = 86400;
+
     private const SECONDS_PER_DAY = 86400;
 
     private LicenseClient $client;
@@ -86,7 +92,18 @@ class LicenseManager
         // string. Nexus already created the DomainActivation in client->activate()
         // above, so roll it back before throwing to avoid orphaning the slot, and
         // report whether that worked so the host can warn when it did not.
-        $gateError = apply_filters('wp_premium_sdk/activation_gate', null, $licenseData);
+        //
+        // Every plugin built on the SDK shares a site, so the gate is scoped to the
+        // product: `wp_premium_sdk/{product_slug}/activation_gate`. The shared
+        // `wp_premium_sdk/activation_gate` still runs, now told the product slug as
+        // a third argument; it is deprecated and goes in a later release. Each runs
+        // on its own with null as the first argument (the shared one's old
+        // contract), so an old shared callback that returns null cannot cancel a
+        // scoped veto: a veto from either one wins, the scoped error first.
+        $productSlug = $this->client->productSlug();
+        $scopedError = apply_filters('wp_premium_sdk/'.$productSlug.'/activation_gate', null, $licenseData, $productSlug);
+        $sharedError = apply_filters('wp_premium_sdk/activation_gate', null, $licenseData, $productSlug);
+        $gateError = is_string($scopedError) && $scopedError !== '' ? $scopedError : $sharedError;
         if (is_string($gateError) && $gateError !== '') {
             $rollback = $this->releaseSeat($licenseKey, $domain);
 
@@ -100,6 +117,56 @@ class LicenseManager
         }
 
         return $this->publicData($licenseData);
+    }
+
+    /**
+     * Activate `$licenseKey` in place of the key this site holds now: activate the
+     * new key first, and only once that worked, release the old key's seat on this
+     * domain. A failed or vetoed activation throws and leaves the old license as it
+     * was.
+     *
+     * `released` is null when there was nothing to release (no key stored, the same
+     * license — same `license_id`, or the same key in any case, as Nexus matches
+     * keys — or a stored key that can no longer be read), else whether Nexus took the
+     * old seat back and, if not, why — so the host can say the seat is still taken.
+     *
+     * @throws Exception
+     *
+     * @return array{license: array<string, mixed>, released: array{removed_remotely: bool, error_code: string|null}|null}
+     */
+    public function replaceKey(string $licenseKey, string $source = KeySource::MANUAL): array
+    {
+        $previousKey = $this->getLicenseKey();
+        $previous = $this->store->get('license');
+        $previousId = is_array($previous) ? ($previous['license_id'] ?? null) : null;
+
+        $license = $this->activate($licenseKey, $source);
+
+        $released = null;
+
+        if ($previousKey !== null && ! $this->isSameLicense($previousKey, $previousId, $licenseKey, $license['license_id'] ?? null)) {
+            $released = $this->releaseSeat($previousKey, Request::currentDomain());
+        }
+
+        return ['license' => $license, 'released' => $released];
+    }
+
+    /**
+     * Whether two keys are the same license. Nexus matches keys without regard to
+     * case, so `abcd-1234` and `ABCD-1234` are one license and releasing the "old"
+     * one would release the seat just activated. The license id decides when both
+     * are known; otherwise the keys are compared trimmed and case-insensitively.
+     *
+     * @param  mixed  $oldId
+     * @param  mixed  $newId
+     */
+    private function isSameLicense(string $oldKey, $oldId, string $newKey, $newId): bool
+    {
+        if ($oldId !== null && $oldId !== '' && $newId !== null && $newId !== '') {
+            return (string) $oldId === (string) $newId;
+        }
+
+        return strcasecmp(trim($oldKey), trim($newKey)) === 0;
     }
 
     /**
@@ -281,22 +348,48 @@ class LicenseManager
      * says nothing about the license — network down, server broken, unreadable
      * reply, rate limited — keeps the cached license, so a blip never locks out a
      * paying site.
+     *
+     * Nothing is asked while a rate limit from Nexus runs (see retryAt()), however
+     * the call is made. With `$minInterval`, nothing is asked either when the last
+     * check, answered or not, was less than that many seconds ago; the license
+     * page's `get_status` passes MIN_REFRESH_INTERVAL.
+     *
+     * @return bool Whether Nexus was asked and answered (a refusal counts), so the
+     *              stored license is fresh.
      */
-    public function refreshStatus(): void
+    public function refreshStatus(int $minInterval = 0): bool
     {
         $licenseKey = $this->getLicenseKey();
 
-        if (! $licenseKey) {
-            return;
+        if (! $licenseKey || $this->retryAt() !== null) {
+            return false;
+        }
+
+        $existing = $this->store->get('license');
+
+        if ($minInterval > 0 && time() - (int) ($existing['last_validated_at'] ?? 0) < $minInterval) {
+            return false;
         }
 
         try {
             $response = $this->client->validate($licenseKey, '');
-            $existing = $this->store->get('license');
             $this->store->set('license', $this->mapApiResponse($response, $licenseKey, null, $existing));
+
+            return true;
         } catch (Exception $e) {
-            $this->recordFailedCheck($e, $licenseKey);
+            return $this->recordFailedCheck($e, $licenseKey);
         }
+    }
+
+    /**
+     * When Nexus rate limited the last check with a `Retry-After`, the time it asked
+     * us to wait until; refreshStatus() does not ask before then. Null otherwise.
+     */
+    public function retryAt(): ?int
+    {
+        $retryAt = (int) ($this->store->get('license')['retry_at'] ?? 0);
+
+        return $retryAt > time() ? $retryAt : null;
     }
 
     public function isActivated(): bool
@@ -306,14 +399,21 @@ class LicenseManager
         return ! empty($data) && ! empty($data['license_key']);
     }
 
+    /**
+     * Active, not expired, activated on this site, and the stored key can still be
+     * read: a key that no longer decrypts (see classify()'s `key_unreadable`) can
+     * neither update nor validate, so it is not valid.
+     */
     public function isValid(): bool
     {
-        return self::isValidLicenseData($this->store->get('license'));
+        return self::isValidLicenseData($this->store->get('license')) && $this->getLicenseKey() !== null;
     }
 
     /**
      * Whether a stored license section (this site's, or another site's read from
-     * its own row) holds a key, is active and has not expired.
+     * its own row) holds a key, is active, has not expired, and is activated on
+     * that site. A copy on a domain Nexus does not know (`site.active` false, a
+     * staging clone) is not valid, so it gets no updates until it is activated.
      *
      * @param  array<string, mixed>|null  $data
      */
@@ -324,6 +424,10 @@ class LicenseManager
         }
 
         if (($data['status'] ?? '') !== 'active') {
+            return false;
+        }
+
+        if (is_array($data['site'] ?? null) && ($data['site']['active'] ?? null) === false) {
             return false;
         }
 
@@ -344,17 +448,23 @@ class LicenseManager
      * host plugin maps the returned code to a translatable message under its own
      * text domain (see LicenseErrorCode and docs/nexus-license-error-codes.md).
      *
-     * Precedence (highest first): suspended/revoked/disabled > expired >
-     * over_limit > expiring_soon > not_activated > active. An unrecognized stored
-     * status falls through to "invalid". An empty expires_at is a lifetime
-     * license — never expiring or expired.
+     * Precedence (highest first): key_unreadable > suspended/revoked/disabled >
+     * expired > over_limit > not_activated_here > expiring_soon > not_activated >
+     * active. An unrecognized stored status falls through to "invalid". An empty
+     * expires_at is a lifetime license — never expiring or expired.
+     *
+     * key_unreadable means a key is stored but no longer decrypts (the salts
+     * changed, or the fallback cipher key was lost): the host asks for the key
+     * again. not_activated_here means Nexus said this domain holds no activation
+     * (`site.active` false, e.g. a staging clone) while the license itself is fine.
      *
      * over_limit means more sites are activated than the license allows
      * (activation_count > max_activations; max 0 is unlimited). Using exactly the
      * seats paid for, this site among them, is not over the limit. When Nexus
      * reports this site's own seat (`site.is_counted` / `site.active`), that wins:
      * a site that uses no seat is never over the limit, and a site without an
-     * activation is over it as soon as every seat is taken.
+     * activation here (`site.active` false) is `not_activated_here` even when every
+     * seat is taken; only more activations than seats is over the limit there.
      *
      * `days_remaining` is ceil((expires_at - now) / day): null when there is no
      * expiry, <= 0 once expired, otherwise the whole days left.
@@ -374,6 +484,15 @@ class LicenseManager
         }
 
         $rawStatus = (string) ($data['status'] ?? '');
+
+        if ($this->getLicenseKey() === null) {
+            return [
+                'code' => LicenseErrorCode::KEY_UNREADABLE,
+                'days_remaining' => null,
+                'raw_status' => $rawStatus,
+            ];
+        }
+
         $expiresAt = (string) ($data['expires_at'] ?? '');
         $maxActivations = (int) ($data['max_activations'] ?? 0);
         $activationCount = (int) ($data['activation_count'] ?? 0);
@@ -394,7 +513,7 @@ class LicenseManager
         $site = is_array($data['site'] ?? null) ? $data['site'] : [];
 
         return [
-            'code' => $this->resolveStateCode($rawStatus, $expiredByDate, $daysRemaining, $this->isOverLimit($maxActivations, $activationCount, $site)),
+            'code' => $this->resolveStateCode($rawStatus, $expiredByDate, $daysRemaining, $this->isOverLimit($maxActivations, $activationCount, $site), ($site['active'] ?? null) === false),
             'days_remaining' => $daysRemaining,
             'raw_status' => $rawStatus,
         ];
@@ -404,7 +523,7 @@ class LicenseManager
      * Apply notice precedence to the stored license signals and return the
      * single winning state code.
      */
-    private function resolveStateCode(string $rawStatus, bool $expiredByDate, ?int $daysRemaining, bool $overLimit): string
+    private function resolveStateCode(string $rawStatus, bool $expiredByDate, ?int $daysRemaining, bool $overLimit, bool $notActivatedHere = false): string
     {
         // 1. Account-level holds — different action (contact support), so they
         //    outrank everything else.
@@ -431,17 +550,23 @@ class LicenseManager
             return LicenseErrorCode::OVER_LIMIT;
         }
 
-        // 4. Approaching expiry.
+        // 4. The license is fine, but this domain holds no activation on it —
+        //    activate here or move the license.
+        if ($notActivatedHere && ($rawStatus === LicenseErrorCode::ACTIVE || $rawStatus === '')) {
+            return LicenseErrorCode::NOT_ACTIVATED_HERE;
+        }
+
+        // 5. Approaching expiry.
         if ($daysRemaining !== null && $daysRemaining > 0 && $daysRemaining <= self::EXPIRY_WARNING_DAYS) {
             return LicenseErrorCode::EXPIRING_SOON;
         }
 
-        // 5. Healthy — an activated license with no explicit status defaults to active.
+        // 6. Healthy — an activated license with no explicit status defaults to active.
         if ($rawStatus === LicenseErrorCode::ACTIVE || $rawStatus === '') {
             return LicenseErrorCode::ACTIVE;
         }
 
-        // 6. Stored status present but unrecognized — safe catch-all.
+        // 7. Stored status present but unrecognized — safe catch-all.
         return LicenseErrorCode::INVALID;
     }
 
@@ -461,9 +586,11 @@ class LicenseManager
             return false;
         }
 
-        // Not activated here: there is room only while a seat is still free.
+        // Not activated here: this site is not one of the counted ones, so a full
+        // license (1 of 1) is not over its limit from here — classify() says
+        // not_activated_here. Only more sites than seats is.
         if (array_key_exists('active', $site) && $site['active'] === false) {
-            return $activationCount >= $maxActivations;
+            return $activationCount > $maxActivations;
         }
 
         // Activated here (or Nexus did not say): this site is one of the counted ones.
@@ -745,25 +872,50 @@ class LicenseManager
      * license, so the cached license stays and only the attempt time moves. Any
      * other code is Nexus refusing the key: that answer is stored, negative status
      * and all, so the site stops treating a refused license as active.
+     *
+     * A rate limit that says how long to wait (`Retry-After`) is remembered as
+     * `retry_at`, at most MAX_RETRY_WAIT away, and refreshStatus() waits for it.
+     *
+     * `domain_not_allowed` is about this site's address, not the license: the
+     * stored status stays, and `site.active` becomes false, which classify()
+     * reports as `not_activated_here`.
+     *
+     * @return bool Whether Nexus answered (the refusal was stored).
      */
-    private function recordFailedCheck(Exception $e, string $licenseKey): void
+    private function recordFailedCheck(Exception $e, string $licenseKey): bool
     {
         $existing = $this->store->get('license');
 
         if (! $existing) {
-            return;
+            return false;
         }
 
         $now = time();
 
         if (! $e instanceof ApiException || $e->isTransient() || $e->getErrorCode() === LicenseErrorCode::UNKNOWN) {
             $existing['last_validated_at'] = $now;
+
+            if ($e instanceof ApiException && $e->getErrorCode() === LicenseErrorCode::RATE_LIMITED && $e->getRetryAfter() !== null) {
+                $existing['retry_at'] = $now + min(max($e->getRetryAfter(), 1), self::MAX_RETRY_WAIT);
+            }
+
             $this->store->set('license', $existing);
 
-            return;
+            return false;
         }
 
         $code = $e->getErrorCode();
+
+        if ($code === LicenseErrorCode::DOMAIN_NOT_ALLOWED) {
+            $site = is_array($existing['site'] ?? null) ? $existing['site'] : ['is_counted' => null];
+            $existing['site'] = ['active' => false] + $site;
+            $existing['error_code'] = $code;
+            $existing['last_validated_at'] = $now;
+            $existing['last_success_at'] = $now;
+            $this->store->set('license', $existing);
+
+            return true;
+        }
         $body = $e->getData();
         $refusedStatus = $this->statusForRefusal($code);
 
@@ -787,6 +939,8 @@ class LicenseManager
 
         $refused['error_code'] = $code;
         $this->store->set('license', $refused);
+
+        return true;
     }
 
     /**
@@ -913,7 +1067,13 @@ class LicenseManager
     {
         if (! empty($data['license_key'])) {
             try {
-                $data['license_key_masked'] = $this->maskKey($this->encryptor->decrypt($data['license_key']));
+                $key = $this->encryptor->decrypt($data['license_key']);
+
+                // Unreadable key (salts rotated, cipher key lost) — omit the masked
+                // value rather than fail; classify() reports `key_unreadable`.
+                if ($key !== null) {
+                    $data['license_key_masked'] = $this->maskKey($key);
+                }
             } catch (Exception $e) {
                 // Corrupt/unreadable key — omit the masked value rather than fail.
             }

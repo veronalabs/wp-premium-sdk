@@ -158,7 +158,7 @@ class AccountManager
 
             if ($key !== '') {
                 try {
-                    $licenseManager->activate($key);
+                    $licenseManager->replaceKey($key);
                     // Signed in, license picked and activated: the sign-in has
                     // done its job, so it ends here.
                     $this->endSignIn();

@@ -232,8 +232,13 @@ class LicenseClassifyTest extends TestCase
     {
         $full = ['status' => 'active', 'expires_at' => $this->inDays(30), 'max_activations' => 3, 'activation_count' => 3];
 
-        // Not activated here and every seat taken: no room for this site.
+        // Not activated here and every seat taken: this site holds no seat, so it
+        // is not over the limit; it is not activated here.
         $this->seed($full + ['site' => ['active' => false, 'is_counted' => true]]);
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
+
+        // Not activated here, and the other sites alone are more than the seats.
+        $this->seed(['activation_count' => 4] + $full + ['site' => ['active' => false, 'is_counted' => true]]);
         $this->assertSame(LicenseErrorCode::OVER_LIMIT, $this->manager->classify()['code']);
 
         // Activated here and one of the three: fine.
@@ -254,13 +259,16 @@ class LicenseClassifyTest extends TestCase
 
     /**
      * Seed the license store with a stored shape (always with a key so it counts
-     * as activated). classify() never decrypts the key, so any non-empty value works.
+     * as activated). The key is encrypted for real: one that does not decrypt is
+     * `key_unreadable`.
      *
      * @param  array<string, mixed>  $overrides
      */
     private function seed(array $overrides): void
     {
-        $this->store->set('license', array_merge(['license_key' => 'enc-key'], $overrides));
+        $key = (new SodiumEncryptor('wp_statistics_premium_cipher'))->encrypt('KEY-0001');
+
+        $this->store->set('license', array_merge(['license_key' => $key], $overrides));
     }
 
     /**

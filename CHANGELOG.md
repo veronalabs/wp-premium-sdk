@@ -32,6 +32,10 @@ All notable changes to this package are documented here. The format follows
 - Account sub-action `remove_site` (`license_id`, `domain`): a signed-in owner frees a seat for this site by releasing another site from a license on their account, then retries `activate_license`. The key is looked up on the server; this site is refused with `this_site`. Account `get_status` returns `pending_choice`. (#31)
 - Sign-in errors carry a code: account `get_status` adds `oauth_error_code` and `oauth_error_extra` next to `oauth_error`. New code `no_licenses` for an account with no licenses for this product; a failed single-license activation or license fetch keeps Nexus's code and the extras an AJAX error carries (`renewal`, `retry_after`, `removed_remotely`, `rollback_error_code`); anything else is `account_error`. `AccountManager::consumeFlashErrorDetail()` and `setFlashErrorFrom()`; `setFlashError()` takes an optional code and extras. (#32)
 - `AbstractAjaxEndpoint::errorCodeOf()` and `errorExtra()`, the code and extras `dispatch()` sends for a failure.
+- `LicenseManager::replaceKey()`: activates a new key, then releases the old key's seat on this domain once that worked, returning `license` and `released` (`{removed_remotely, error_code}` or null). (#30)
+- State codes `key_unreadable` (a stored key that no longer decrypts) and `not_activated_here` (Nexus said this domain holds no activation on a license that is otherwise fine). (#29, #37)
+- The product-scoped activation gate `wp_premium_sdk/{product_slug}/activation_gate` (`$error`, `$licenseData`, `$productSlug`); `LicenseClient::productSlug()`. (#38)
+- `get_status` returns `fresh` (whether Nexus answered just now) and `retry_at` (until when Nexus asked us to wait), and takes body `force=1` for a "check now". `LicenseManager::retryAt()`, `MIN_REFRESH_INTERVAL`, `MAX_RETRY_WAIT`. (#39)
 
 ### Changed
 
@@ -48,6 +52,9 @@ All notable changes to this package are documented here. The format follows
 - `LicenseEndpoints` and `LicenseBootstrap` take the new services in their constructors; `PremiumServiceProvider` wires them. `AbstractAjaxEndpoint` gains `requiredCapability()`. `LicenseManager::releaseSeat()` is public.
 - README: fixed the non-existent `deactivateAndCleanup()` and `removeAll()` examples, documented `uninstall()`, the sign-in flow, the new sub-actions and the full data model. (#21)
 - README: the AJAX nonce is read from `nonce_param` (default `nonce`) for `nonce_action` (default `{ajax_action}_{endpoint}`), not `_ajax_nonce`; both keys are in the optional-keys table. (#40)
+- `refreshStatus(int $minInterval = 0)` returns whether Nexus answered. It makes no call while a `Retry-After` wait from Nexus runs (stored as `retry_at`, at most a day), and none when the last check was under `$minInterval` seconds ago; `get_status` passes 60 unless forced, so reloading or polling the license page no longer asks Nexus every time. (#39)
+- The `activate` and `activate_license` sub-actions also return `released`. (#30)
+- `classify()` precedence: `key_unreadable` first, and `not_activated_here` between `over_limit` and `expiring_soon`. (#29, #37)
 
 ### Fixed
 
@@ -55,6 +62,13 @@ All notable changes to this package are documented here. The format follows
 - `Request::normaliseDomain()` drops any port, not just `:80` and `:443`, matching `currentDomain()`. A network subsite on a site served on a port (e.g. `localhost:8890`) now counts as holding the seat it activated. (#25)
 - `PremiumServiceProvider::uninstall()` also deletes the network's new-sites list (`{option_key}_network_new_sites`). (#26)
 - The sign-in return handler runs only for a user with the account endpoint's capability (`manage_options`, read through the new `AbstractAjaxEndpoint::capability()` so the two checks cannot drift), so a logged-out request to `admin-ajax.php` or `admin-post.php` carrying the return parameters no longer writes a flash error for user 0 that hid an administrator's next sign-in error. (#28)
+- A stored key that can no longer be decrypted (rotated salts, a lost `{option_key}_cipher`) no longer makes `getLicenseData()` and the `get_status`, `list_sites` and `remove_site` sub-actions fail with a `TypeError`. `license_key_masked` is left out, `isValid()` is false (so updates no longer run with a null key), and `classify()` returns `key_unreadable` so the host can ask for the key again. (#29)
+- Activating a different key on the license page, in the account picker or through a single-license sign-in releases the old key's seat on this domain, instead of leaving it taken on Nexus. (#30)
+- `validate()` from a domain without an activation (a staging clone) no longer stores `domain_not_allowed` as an `invalid` license that the next `refreshStatus()` flips back to `active`: the status stays, `site.active` becomes false and `classify()` says `not_activated_here`. `isValid()` is false for a license with `site.active` false, so such a copy gets no updates until it is activated on its own address. (#37)
+- One plugin's activation gate can no longer veto another product's activation: gates go on the product-scoped filter, and the shared one is told the product slug. (#38)
+- The shared activation gate no longer receives the scoped gate's result, so an old shared callback that returns null cannot cancel a scoped veto; a veto from either filter blocks the activation. (#42)
+- `replaceKey()` treats the same license as the same: it compares `license_id` when both are known, else the keys trimmed and ignoring case (as Nexus does), so re-entering the current key in other case no longer releases this site's seat right after activating it. (#42)
+- `classify()` on a site Nexus says holds no activation (`site.active` false, e.g. a staging copy refused with `domain_not_allowed`) returns `not_activated_here` when the license is full (1 of 1), not `over_limit`; `over_limit` there needs more activations than seats. (#42)
 
 ### Security
 
@@ -65,6 +79,7 @@ All notable changes to this package are documented here. The format follows
 ### Deprecated
 
 - `Request::useNetworkLicenceFor()` does nothing and will be removed in a later release. (#7)
+- The shared `wp_premium_sdk/activation_gate` filter. It still runs (on its own, starting from null, with the product slug as a third argument) and will be removed in a later release; use `wp_premium_sdk/{product_slug}/activation_gate`. (#38)
 
 ### Removed
 
