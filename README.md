@@ -174,12 +174,15 @@ On a network, run it once per site inside `switch_to_blog()`, building a new pro
 $license = $sdk->licenseManager();
 
 $license->activate('KEY-ABCD-1234'); // → public-safe license data array (refused while the key is managed elsewhere)
+$license->replaceKey('KEY-NEW-5678'); // → ['license' => [...], 'released' => ?['removed_remotely' => bool, 'error_code' => ?string]]
 $license->validate();                // → bool (re-checks with Nexus, with this site's domain)
-$license->refreshStatus();           // re-reads status/expiry from Nexus, no domain check
+$license->refreshStatus();           // → bool; re-reads status/expiry from Nexus, no domain check
+$license->refreshStatus(LicenseManager::MIN_REFRESH_INTERVAL); // skipped when checked under 60s ago
+$license->retryAt();                 // ?int — until when Nexus asked us to wait (Retry-After), else null
 $license->deactivate();              // → ['removed_remotely' => bool, 'error_code' => ?string]
 
 $license->isActivated();             // bool
-$license->isValid();                 // bool — active + not expired
+$license->isValid();                 // bool — active, not expired, activated on this site
 $license->classify();                // ['code' => 'active'|'expired'|..., 'days_remaining' => ?int, 'raw_status' => string]
 $license->hasFeature('pro-reports'); // bool
 $license->getFeatures();             // ['pro-reports', 'api', ...]
@@ -203,7 +206,21 @@ Keys are encrypted via the injected `EncryptorInterface` before storage and decr
 
 A failed check keeps the cached license only when the failure says nothing about the license (network down, server error, unreadable reply, rate limited). When Nexus refuses the key — expired, suspended, revoked, disabled, invalid, wrong product — the refusal is stored and `isValid()` stops passing. See [docs/nexus-license-error-codes.md](docs/nexus-license-error-codes.md).
 
-The `wp_premium_sdk/activation_gate` filter can veto an activation by returning an error string. The SDK then hands the seat back and throws `ActivationVetoedException` (a `RuntimeException`) whose `removedRemotely()` / `rollbackErrorCode()` say whether that worked.
+`replaceKey()` is how a key is changed: it activates the new key first and, only once that worked, releases the old key's seat on this domain. `released` is null when there was nothing to release (no key, the same license, or a key that can no longer be read). The same license means the same `license_id` when both are known, else the same key ignoring case and surrounding spaces, as Nexus matches keys, so re-entering the current key in other case does not release this site's seat. The license page's `activate`, the account picker's `activate_license` and the single-license sign-in all use it, so changing keys no longer leaves the old key's seat taken. A failed or vetoed activation throws and leaves the old license as it was.
+
+The `wp_premium_sdk/{product_slug}/activation_gate` filter can veto an activation of this product by returning an error string. The SDK then hands the seat back and throws `ActivationVetoedException` (a `RuntimeException`) whose `removedRemotely()` / `rollbackErrorCode()` say whether that worked.
+
+```php
+add_filter('wp_premium_sdk/wp-statistics/activation_gate', function ($error, array $license, string $productSlug) {
+    return in_array($license['tier_slug'], ['pro', 'elite'], true) ? $error : 'Your license tier is lower than the installed build.';
+}, 10, 3);
+```
+
+The shared `wp_premium_sdk/activation_gate` filter still runs for every product on the site, and now gets the product slug as a third argument. Each filter starts from null on its own, and a veto from either one blocks the activation, so a shared callback that returns `$error` unchanged cannot cancel a scoped veto. It is deprecated: a gate on it also sees other plugins' activations, so it must check the slug. Move to the scoped name; the shared one will be removed in a later release.
+
+`refreshStatus()` keeps the cached license when a check fails for reasons that say nothing about it. When Nexus rate limits it with a `Retry-After`, the wait (at most a day) is stored as `retry_at` and no check is made before then, forced or not; `retryAt()` reports it. Passing a minimum interval skips the call when the last check was more recent than that; `get_status` passes `LicenseManager::MIN_REFRESH_INTERVAL` (60 seconds).
+
+A stored key that can no longer be decrypted (the WordPress salts changed, or the `{option_key}_cipher` fallback key was lost) is reported, not fatal: `getLicenseKey()` is null, `isValid()` is false, `classify()` returns `key_unreadable` and `getLicenseData()` leaves out `license_key_masked`. `isActivated()` stays true, so `deactivate()` can still clear it; the host asks for the key again.
 
 `activate()` stores `activated_domain`, the normalised domain it activated. When `home_url()` later normalises to something else — a staging copy cloned from production, or a site moved to a new address — `domainChange()` reports both. `moveLicense()` activates the current domain first and releases the old one only once that worked. Whether the new domain uses a seat is Nexus's call (`license.site.is_counted` in the activate reply); by default the old domain is released only when the new one is counted, so a development copy never cuts production off.
 
@@ -369,9 +386,9 @@ POST `sub_action` values:
 
 | `sub_action` | Purpose |
 |---|---|
-| `activate` | Body: `license_key`. Activates + stores. |
+| `activate` | Body: `license_key`. Activates + stores, through `replaceKey()`: a different key stored before has its seat on this domain released once the new one is active. Returns `license` and `released` (`{removed_remotely, error_code}`, or null when there was nothing to release). |
 | `deactivate` | Removes the local license (modules stay). Returns `removed: []`, `removed_remotely`, `error_code`. |
-| `get_status` | Refreshes from Nexus, then returns `is_activated`, `is_valid`, `license` snapshot, `state` (the `classify()` result), `installed_features`, `source` (`manual` / `constant` / `network`), `auto_activation` (last failed automatic activation or null; always null on a network-managed subsite), `context` (`site` / `network`), `is_network_managed`, `domain_changed` (`{was, now}` or null) and `tier_mismatch` (`{installed, licensed}` from the cached manifest, or null). |
+| `get_status` | Refreshes from Nexus (at most once a minute unless body `force` is `1`, and never while a `Retry-After` wait runs), then returns `fresh` (whether Nexus answered just now), `retry_at` (until when Nexus asked us to wait, or null), `is_activated`, `is_valid`, `license` snapshot, `state` (the `classify()` result), `installed_features`, `source` (`manual` / `constant` / `network`), `auto_activation` (last failed automatic activation or null; always null on a network-managed subsite), `context` (`site` / `network`), `is_network_managed`, `domain_changed` (`{was, now}` or null) and `tier_mismatch` (`{installed, licensed}` from the cached manifest, or null). |
 | `list_sites` | Fetches the license's sites from Nexus (cached list when it can't be reached, `fresh: false`). Returns `sites` (each with `this_site`), `max_activations`, `activation_count`, `manage_url`. |
 | `remove_site` | Body: `domain`. Releases that site's seat with this site's license key, then returns the refreshed `sites`. This site is refused with code `this_site` — use `deactivate`. |
 | `move_license` | Activates the current domain, then releases the old one (see `domain_changed`). Optional body `release_old` (`1`/`0`) overrides the default, which releases only when Nexus counts the new domain. Returns `activated: {domain, is_counted}`, `released: {domain, attempted, removed_remotely, error_code}`, `license`. A failed activation is an error and leaves the old domain's seat alone. Refused with `domain_unchanged` when there is nothing to move. |
@@ -407,7 +424,7 @@ Registered on multisite only. Nonce `{ajax_action}_network_license`; capability 
 | `logout` | Clears the account session. |
 | `get_status` | Returns `connected` (a sign-in is in progress) + any OAuth flash error. |
 | `fetch_licenses` | Lists the signed-in user's licenses for the picker. Fails with `account_expired` when the sign-in has lapsed, `sign_in_other_user` when another admin started it. |
-| `activate_license` | Body: `license_key`. Activates it and ends the sign-in. |
+| `activate_license` | Body: `license_key`. Activates it through `replaceKey()` (a different key stored before has its seat released) and ends the sign-in. Returns `license` and `released`. |
 
 Nonce: `{ajax_action}_account`. Capability: `manage_options`.
 

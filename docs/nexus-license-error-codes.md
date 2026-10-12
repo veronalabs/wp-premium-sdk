@@ -90,9 +90,19 @@ decides what the failure means:
 - **Refusal** — any other code: Nexus has answered, so the answer is stored.
   The stored `status` becomes `expired` (`license_expired`), `suspended`
   (`license_suspended`), `revoked`, `disabled` (`key_disabled`) or `invalid`
-  (everything else, e.g. `invalid_key`, `wrong_product`, `domain_not_allowed`),
-  and `error_code` holds the code. When the body carries a `license` block, that
-  is stored instead.
+  (everything else, e.g. `invalid_key`, `wrong_product`), and `error_code`
+  holds the code. When the body carries a `license` block, that is stored
+  instead.
+- **Not this domain** — `domain_not_allowed` (a `validate()` from a domain that
+  holds no activation, e.g. a staging clone) is about the site's address, not
+  the license: the stored `status` stays, `error_code` is set, and `site.active`
+  becomes false, which `classify()` reports as `not_activated_here`. A later
+  domain-less `refreshStatus()` keeps it; activating here (or `move_license`)
+  clears it. `isValid()` is false meanwhile, so the copy gets no updates until
+  it is activated on its own address.
+
+A `rate_limited` failure with a `Retry-After` header stores `retry_at` (at most
+a day away), and `refreshStatus()` makes no call before then, even when forced.
 
 Failed update-manifest fetches are remembered and retried after 1h, 3h, 6h,
 then every 12h at most (or later, if `Retry-After` says so).
@@ -118,18 +128,22 @@ expiry/activation fields.
 | `over_limit`    | `activation_count > max_activations` (`max > 0`) — see below. | Manage activations |
 | `not_activated` | No key stored on this site.                      | Activate |
 | `invalid`       | `status` present but unrecognized (catch-all).   | (generic) |
+| `key_unreadable` | A key is stored but no longer decrypts (salts changed, cipher key lost). `isValid()` is false. | Re-enter the key |
+| `not_activated_here` | The license is fine, but Nexus said this domain holds no activation (`site.active: false`, from `domain_not_allowed`). | Activate here / Move license |
 
 ### Notice precedence (only one notice shows)
 
 Highest → lowest:
 
 ```
-suspended / revoked / disabled  (→ support)
-  > expired                     (→ renew)
-    > over_limit                (→ manage)
-      > expiring_soon           (→ renew now)
-        > not_activated         (→ activate)
-          > active              (none)
+key_unreadable                  (→ re-enter the key)
+  > suspended / revoked / disabled  (→ support)
+    > expired                     (→ renew)
+      > over_limit                (→ manage)
+        > not_activated_here      (→ activate here / move)
+          > expiring_soon         (→ renew now)
+            > not_activated       (→ activate)
+              > active            (none)
 ```
 
 `expired` outranks `over_limit`: renewing is what fixes an expired license, and
@@ -146,7 +160,7 @@ When Nexus sends this site's own seat (`license.site`), that decides instead:
 | `site.is_counted` | `site.active` | over_limit when |
 |---|---|---|
 | `false` | any | never (a development site uses no seat) |
-| `true` / absent | `false` | `activation_count >= max_activations` (no seat free for this site) |
+| `true` / absent | `false` | `activation_count > max_activations` (this site holds no seat, so a full license, e.g. 1 of 1, is `not_activated_here`) |
 | `true` / absent | `true` / absent | `activation_count > max_activations` |
 
 ### Expiry thresholds

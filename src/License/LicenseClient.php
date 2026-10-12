@@ -24,6 +24,14 @@ class LicenseClient
     }
 
     /**
+     * The product slug this client asks Nexus about.
+     */
+    public function productSlug(): string
+    {
+        return $this->config->productSlug();
+    }
+
+    /**
      * @throws Exception
      */
     public function activate(string $licenseKey, string $domain, string $siteUrl): array
