@@ -182,7 +182,7 @@ $license->retryAt();                 // ?int — until when Nexus asked us to wa
 $license->deactivate();              // → ['removed_remotely' => bool, 'error_code' => ?string]
 
 $license->isActivated();             // bool
-$license->isValid();                 // bool — active + not expired
+$license->isValid();                 // bool — active, not expired, activated on this site
 $license->classify();                // ['code' => 'active'|'expired'|..., 'days_remaining' => ?int, 'raw_status' => string]
 $license->hasFeature('pro-reports'); // bool
 $license->getFeatures();             // ['pro-reports', 'api', ...]

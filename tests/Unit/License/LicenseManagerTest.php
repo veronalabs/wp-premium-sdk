@@ -606,7 +606,7 @@ class LicenseManagerTest extends TestCase
         $this->assertSame('domain_not_allowed', $data['error_code']);
         $this->assertFalse($data['site']['active']);
         $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
-        $this->assertTrue($this->manager->isValid());
+        $this->assertFalse($this->manager->isValid(), 'No updates until it is activated here.');
         $this->assertSame(['was' => 'example.com', 'now' => 'staging.example.com'], $this->manager->domainChange());
 
         // A domain-less refresh says nothing about this domain, so the state holds.
@@ -614,7 +614,7 @@ class LicenseManagerTest extends TestCase
         $this->manager->refreshStatus();
 
         $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
-        $this->assertTrue($this->manager->isValid());
+        $this->assertFalse($this->manager->isValid(), 'No updates until it is activated here.');
     }
 
     public function test_not_activated_here_gives_way_to_a_full_license(): void

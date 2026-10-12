@@ -98,7 +98,8 @@ decides what the failure means:
   the license: the stored `status` stays, `error_code` is set, and `site.active`
   becomes false, which `classify()` reports as `not_activated_here`. A later
   domain-less `refreshStatus()` keeps it; activating here (or `move_license`)
-  clears it. `isValid()` is not changed by it.
+  clears it. `isValid()` is false meanwhile, so the copy gets no updates until
+  it is activated on its own address.
 
 A `rate_limited` failure with a `Retry-After` header stores `retry_at` (at most
 a day away), and `refreshStatus()` makes no call before then, even when forced.

@@ -59,7 +59,7 @@ All notable changes to this package are documented here. The format follows
 - `PremiumServiceProvider::uninstall()` also deletes the network's new-sites list (`{option_key}_network_new_sites`). (#26)
 - A stored key that can no longer be decrypted (rotated salts, a lost `{option_key}_cipher`) no longer makes `getLicenseData()` and the `get_status`, `list_sites` and `remove_site` sub-actions fail with a `TypeError`. `license_key_masked` is left out, `isValid()` is false (so updates no longer run with a null key), and `classify()` returns `key_unreadable` so the host can ask for the key again. (#29)
 - Activating a different key on the license page, in the account picker or through a single-license sign-in releases the old key's seat on this domain, instead of leaving it taken on Nexus. (#30)
-- `validate()` from a domain without an activation (a staging clone) no longer stores `domain_not_allowed` as an `invalid` license that the next `refreshStatus()` flips back to `active`: the status stays, `site.active` becomes false and `classify()` says `not_activated_here`. (#37)
+- `validate()` from a domain without an activation (a staging clone) no longer stores `domain_not_allowed` as an `invalid` license that the next `refreshStatus()` flips back to `active`: the status stays, `site.active` becomes false and `classify()` says `not_activated_here`. `isValid()` is false for a license with `site.active` false, so such a copy gets no updates until it is activated on its own address. (#37)
 - One plugin's activation gate can no longer veto another product's activation: gates go on the product-scoped filter, and the shared one is told the product slug. (#38)
 
 ### Deprecated

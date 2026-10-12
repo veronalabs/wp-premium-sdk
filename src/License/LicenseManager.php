@@ -375,9 +375,9 @@ class LicenseManager
     }
 
     /**
-     * Active, not expired, and the stored key can still be read: a key that no
-     * longer decrypts (see classify()'s `key_unreadable`) can neither update nor
-     * validate, so it is not valid.
+     * Active, not expired, activated on this site, and the stored key can still be
+     * read: a key that no longer decrypts (see classify()'s `key_unreadable`) can
+     * neither update nor validate, so it is not valid.
      */
     public function isValid(): bool
     {
@@ -386,7 +386,9 @@ class LicenseManager
 
     /**
      * Whether a stored license section (this site's, or another site's read from
-     * its own row) holds a key, is active and has not expired.
+     * its own row) holds a key, is active, has not expired, and is activated on
+     * that site. A copy on a domain Nexus does not know (`site.active` false, a
+     * staging clone) is not valid, so it gets no updates until it is activated.
      *
      * @param  array<string, mixed>|null  $data
      */
@@ -397,6 +399,10 @@ class LicenseManager
         }
 
         if (($data['status'] ?? '') !== 'active') {
+            return false;
+        }
+
+        if (is_array($data['site'] ?? null) && ($data['site']['active'] ?? null) === false) {
             return false;
         }
 
