@@ -105,6 +105,9 @@ final class LicenseErrorCode
      */
     public const SIGN_IN_OTHER_USER = 'sign_in_other_user';
 
+    /** The account signed in to has no licenses for this product. */
+    public const NO_LICENSES = 'no_licenses';
+
     /**
      * Network Admin asked to activate more subsites than the license has free seats.
      * Carries `needed` and `left`.
@@ -176,6 +179,7 @@ final class LicenseErrorCode
             self::INVALID_RESPONSE,
             self::ACCOUNT_EXPIRED,
             self::SIGN_IN_OTHER_USER,
+            self::NO_LICENSES,
             self::NOT_ENOUGH_SEATS,
             self::KEY_FROM_CONSTANT,
             self::NETWORK_MANAGED,

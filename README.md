@@ -108,6 +108,8 @@ After `register()`:
 | `modules_path` | `''` | Absolute path to `pro/modules/`. Required for `ModuleLoader` / `FeatureInstaller`. |
 | `license_key_constant` | `''` | Name of a wp-config constant that may hold the license key, e.g. `WP_STATISTICS_LICENSE_KEY`. See [Managed keys](#managed-keys). |
 | `installed_tier` | `''` | Tier of the build that is installed (`basic`, `pro` …). Needed for `tier_mismatch` and `install_tier_package`. |
+| `nonce_action` | `''` | Nonce action every AJAX endpoint checks. Empty means one per endpoint: `{ajax_action}_license`, `{ajax_action}_network_license`, `{ajax_action}_account`. Set it to share one nonce across all of them. |
+| `nonce_param` | `nonce` | Request parameter the AJAX endpoints read the nonce from. |
 
 ---
 
@@ -220,7 +222,9 @@ $account->endSignIn();          // revokes the token (best-effort) and ends the 
 $account->clearSession();       // ends the sign-in locally only
 $account->logout();             // voids session + informs Nexus
 $account->consumeFlashError();  // one-shot error message for the UI
-$account->setFlashError($msg);
+$account->consumeFlashErrorDetail(); // the same, as ['code' => ..., 'message' => ..., 'extra' => [...]]
+$account->setFlashError($msg, $code = 'account_error', $extra = []);
+$account->getPendingChoice();   // the picker's licenses, without keys, or null
 ```
 
 The sign-in is a one-time step, not a stored connection:
@@ -228,12 +232,16 @@ The sign-in is a one-time step, not a stored connection:
 1. User clicks "Sign in" → JS calls the `init_oauth` AJAX sub-action → receives `authorize_url`.
 2. Browser navigates to Nexus.
 3. Nexus redirects back with `?{code_param}=...&{state_param}=...`.
-4. `AccountBootstrap::handleOAuthCallback()` detects the params on `admin_init` and exchanges the code for a token. With one license it activates it straight away; with several it stores them as a pending choice for the picker.
+4. `AccountBootstrap::handleOAuthCallback()` detects the params on `admin_init` and exchanges the code for a token. It runs only for a user with `manage_options`, and the state only completes for the user who asked for it. With one license it activates it straight away; with several, or when that activation fails, it stores them as a pending choice for the picker.
 5. Once a license is activated (here or through `activate_license`), the token is revoked on Nexus (best-effort, 5-second timeout, never failing the activation) and the session — token, user, pending choice, flash error — is deleted. From then on everything runs on the license key.
 
 Every way out of the picker deletes the session: activating a license by any path (the provider hooks `endSignIn()` to `LicenseManager::onActivated()`, so a key typed on the license page, a wp-config constant or a network key ends it too), signing out, and the session passing its `expires_at` — checked on every read, so an abandoned picker stops counting without waiting for a 401.
 
-The exchange sends `device_name` (this site's domain). The session stores `user_id`, the WordPress user who started it; only that user sees it. Any other admin gets `connected: false` and no user from `get_status` (the normal activation screen), and `fetch_licenses`, `activate_license` and `logout` answer `sign_in_other_user`.
+The exchange sends `device_name` (this site's domain). The session stores `user_id`, the WordPress user who started it; only that user sees it. Any other admin gets `connected: false` and no user from `get_status` (the normal activation screen), and `fetch_licenses`, `activate_license`, `remove_site` and `logout` answer `sign_in_other_user`.
+
+License keys never reach the browser and are not stored with the session. The pending choice, `fetch_licenses` and `remove_site` give each license without `key` / `license_key`, with an `id` (Nexus's license id) and `license_key_masked` (last four characters). `activate_license` and `remove_site` take that `license_id`, and the SDK looks the key up again in the signed-in user's account.
+
+A sign-in that fails sets a one-shot error with a code, which `get_status` returns as `oauth_error` (the message), `oauth_error_code` and `oauth_error_extra`: `no_licenses` for an account with no licenses for this product; Nexus's code (`activation_limit_reached`, `license_expired`, `wrong_product` …) and the extras an AJAX error carries (`renewal`, `retry_after`, `removed_remotely`, `rollback_error_code`) when the one license could not be activated or the license list could not be fetched; `account_error` for anything without a code.
 
 No refresh token is stored. The session lapses on its own after the token lifetime (Nexus's `expires_in`/`expires_at`, else 24 hours). If Nexus answers 401 or `token_expired` during the picker, the session is cleared and the action fails with `account_expired`, so the UI can ask the user to sign in again.
 
@@ -380,13 +388,13 @@ POST `sub_action` values:
 | `update_feature` | Body: `slug`. Installs the latest version of one licensed module. |
 | `install_features` | Installs **all** licensed modules from the latest manifest. |
 
-Every call requires an `_ajax_nonce` of `{ajax_action}_license` and the WP capability `manage_options`.
+Every call requires the WP capability `manage_options` and a nonce, sent as the `nonce_param` parameter (default `nonce`) for the `nonce_action` action (default `{ajax_action}_license`).
 
 Errors answer `{code, message}` with HTTP 400, plus `renewal` when Nexus attached one, `retry_after` (seconds) when rate limited, and `removed_remotely` / `rollback_error_code` when the activation gate vetoed an activation.
 
 ### Network license (`wp_ajax_{prefix}_network_license`)
 
-Registered on multisite only. Nonce `{ajax_action}_network_license`; capability `manage_network_options`.
+Registered on multisite only. Nonce action `{ajax_action}_network_license` (or `nonce_action` when set); capability `manage_network_options`.
 
 | `sub_action` | Purpose |
 |---|---|
@@ -405,11 +413,14 @@ Registered on multisite only. Nonce `{ajax_action}_network_license`; capability 
 |---|---|
 | `init_oauth` | Returns `authorize_url` + `state`. |
 | `logout` | Clears the account session. |
-| `get_status` | Returns `connected` (a sign-in is in progress) + any OAuth flash error. |
-| `fetch_licenses` | Lists the signed-in user's licenses for the picker. Fails with `account_expired` when the sign-in has lapsed, `sign_in_other_user` when another admin started it. |
-| `activate_license` | Body: `license_key`. Activates it and ends the sign-in. |
+| `get_status` | Returns `connected` (a sign-in is in progress), `user`, `pending_choice` (the picker's licenses without keys, or null) and the one-shot sign-in error: `oauth_error` (message), `oauth_error_code` and `oauth_error_extra` (null when there is none). |
+| `fetch_licenses` | Lists the signed-in user's licenses for the picker, each with `id` and `license_key_masked`, never the key. Fails with `account_expired` when the sign-in has lapsed, `sign_in_other_user` when another admin started it. |
+| `activate_license` | Body: `license_id` (a key the user typed is still accepted as `license_key`). Activates it and ends the sign-in. A `license_id` not on the account answers `account_error`. |
+| `remove_site` | Body: `license_id`, `domain`. Frees a seat for this site: releases `domain` from that license on the signed-in user's account, then returns `removed` and the refreshed `licenses`. This site is refused with code `this_site`; Nexus's refusal comes back with its code. Retry `activate_license` afterwards. |
 
-Nonce: `{ajax_action}_account`. Capability: `manage_options`.
+`fetch_licenses`, `activate_license`, `remove_site` and `logout` answer `sign_in_other_user` for an admin other than the one signing in.
+
+Nonce action: `{ajax_action}_account` (or `nonce_action` when set). Capability: `manage_options`.
 
 ---
 
@@ -495,8 +506,10 @@ Everything the SDK stores lives in one `wp_options` row (keyed by `ClientConfig:
         'user'           => ['email' => 'buyer@example.com', 'name' => 'Ada Buyer'],
         'connected_at'   => 1713484800,
         'expires_at'     => 1713571200,
-        'pending_choice' => [/* licenses for the picker */],
-        'flash_error'    => null,
+        'pending_choice' => [/* licenses for the picker: id, license_key_masked, no key */],
+        'flash_error'    => null,             // one-shot sign-in error message
+        'flash_error_code'  => null,          // its code, e.g. no_licenses
+        'flash_error_extra' => [],            // e.g. renewal, retry_after
     ],
 ]
 ```
