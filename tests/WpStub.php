@@ -26,6 +26,13 @@ class WpStub
     /** Plugin files activated across the whole network. */
     public static array $networkActivatedPlugins = [];
 
+    /**
+     * What `get_plugins()` answers: plugin header data by basename.
+     *
+     * @var array<string, array<string, string>>
+     */
+    public static array $plugins = [];
+
     /** @var array<string, mixed> */
     public static array $transients = [];
 
@@ -87,6 +94,13 @@ class WpStub
     public static array $filters = [];
 
     /**
+     * Every do_action() call, in order: [tag, args].
+     *
+     * @var array<int, array{0: string, 1: array<int, mixed>}>
+     */
+    public static array $actionLog = [];
+
+    /**
      * Every wp_send_json_* payload, in order: ['success' => bool, 'data' => mixed, 'status' => int|null].
      *
      * @var array<int, array{success: bool, data: mixed, status: int|null}>
@@ -122,11 +136,13 @@ class WpStub
         self::$responseQueue = [];
         self::$requestLog = [];
         self::$filters = [];
+        self::$actionLog = [];
         self::$jsonResponses = [];
         self::$homeUrl = 'https://example.com';
         self::$networkHomeUrl = 'https://example.com';
         self::$isMultisite = false;
         self::$networkActivatedPlugins = [];
+        self::$plugins = [];
     }
 
     /**

@@ -151,7 +151,7 @@ if (! function_exists('is_plugin_active_for_network')) {
 if (! function_exists('get_plugins')) {
     function get_plugins(): array
     {
-        return [];
+        return WpStub::$plugins;
     }
 }
 
@@ -476,5 +476,25 @@ if (! function_exists('WP_Filesystem')) {
     function WP_Filesystem($args = false, $context = false, $allowRelaxedFileOwnership = false): bool
     {
         return $args !== false;
+    }
+}
+
+if (! function_exists('do_action')) {
+    function do_action(string $tag, ...$args): void
+    {
+        WpStub::$actionLog[] = [$tag, $args];
+
+        if (empty(WpStub::$filters[$tag])) {
+            return;
+        }
+
+        $byPriority = WpStub::$filters[$tag];
+        ksort($byPriority);
+
+        foreach ($byPriority as $callbacks) {
+            foreach ($callbacks as $callback) {
+                $callback(...$args);
+            }
+        }
     }
 }

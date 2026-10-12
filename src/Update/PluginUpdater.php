@@ -22,6 +22,16 @@ use VeronaLabs\WpPremiumSdk\License\LicenseManager;
  * files and the update transient: it uses the network key and counts as licensed
  * when the main site's activation is valid, whichever subsite triggers it — so a
  * subsite without a seat cannot make the update disappear for the whole network.
+ *
+ * The cached manifest belongs to the key that fetched it, and to the subsite when
+ * the plugin is activated site by site: another key or another subsite asks Nexus
+ * for its own. The `wp_premium_sdk/update_allowed` filter lets the host hold an
+ * update back, and a site that is not licensed (or held back) gets its offer
+ * withdrawn on the next update-check pass, as is an offer for a version that is
+ * already installed. `plugins_api` answers "View details" for this plugin's slug
+ * itself (from the cached manifest, else the plugin header), so WordPress never
+ * asks wordpress.org about it. The cached manifest is dropped once WordPress
+ * upgrades this plugin.
  */
 class PluginUpdater
 {
@@ -64,9 +74,22 @@ class PluginUpdater
     public function register(): void
     {
         add_filter('pre_set_site_transient_update_plugins', [$this, 'injectPluginUpdate']);
+        add_filter('plugins_api', [$this, 'pluginInformation'], 10, 3);
+        add_action('wp_premium_sdk/license_changed', [$this, 'onLicenseChanged'], 10, 1);
+        add_action('upgrader_process_complete', [$this, 'onUpgraderProcessComplete'], 10, 2);
     }
 
     /**
+     * Offer the update from the manifest, or withdraw an offer made earlier.
+     *
+     * WordPress runs this filter over the transient it already holds before it asks
+     * wordpress.org, so an offer made while the license was valid must be taken
+     * back here: when this install is not licensed for updates, the host's
+     * `wp_premium_sdk/update_allowed` filter says no, Nexus says there is no
+     * update, or the manifest's version is already installed (a manifest cached
+     * before an upgrade), the plugin's row moves from `response` to `no_update`.
+     * A failed fetch leaves the transient as it was.
+     *
      * @param  object|false  $transient  The site transient value
      * @return object|false
      */
@@ -77,16 +100,37 @@ class PluginUpdater
         }
 
         // Don't offer an update to a site whose license isn't currently valid
-        // (deactivated/expired) — fetchManifest() already short-circuits on an
-        // invalid license, but a stale manifest cache could still be injected.
+        // (deactivated/expired/revoked); take back one offered before.
         if ($this->updateKey() === null) {
-            return $transient;
+            return $this->withdrawUpdate($transient);
         }
 
         $manifest = $this->fetchManifest();
 
-        if (! $manifest || empty($manifest['update_available']) || empty($manifest['manifest']['plugin'])) {
+        if (! $manifest) {
             return $transient;
+        }
+
+        if (empty($manifest['update_available']) || empty($manifest['manifest']['plugin'])) {
+            return $this->withdrawUpdate($transient);
+        }
+
+        // The cached answer can predate an upgrade: never offer what is installed.
+        if (version_compare($this->config->currentVersion(), (string) ($manifest['manifest']['version'] ?? ''), '>=')) {
+            return $this->withdrawUpdate($transient);
+        }
+
+        /**
+         * Whether to offer the update in the manifest. Return false to hold it back
+         * (the host's own entitlement rules, a tier it won't install, ...); an
+         * update already offered is withdrawn.
+         *
+         * @param  bool  $allowed  True by default.
+         * @param  string  $productSlug  The product the manifest is for.
+         * @param  array<string, mixed>  $manifest  The manifest from Nexus.
+         */
+        if (! apply_filters('wp_premium_sdk/update_allowed', true, $this->config->productSlug(), $manifest)) {
+            return $this->withdrawUpdate($transient);
         }
 
         $payload = $manifest['manifest'];
@@ -104,7 +148,135 @@ class PluginUpdater
             'requires_php' => $payload['requires_php'] ?? '',
         ];
 
+        if (isset($transient->no_update) && is_array($transient->no_update)) {
+            unset($transient->no_update[$this->pluginBasename]);
+        }
+
         return $transient;
+    }
+
+    /**
+     * Answer `plugins_api('plugin_information')` for this plugin — the "View
+     * details" modal — so WordPress never asks wordpress.org about the slug (the
+     * premium slug is not there, or is someone else's plugin).
+     *
+     * With a manifest cached for the key updates run on, the answer describes the
+     * manifest's version (requirements, changelog) and carries its package as
+     * `download_link` when an update is available, so the modal offers "Install
+     * Update Now". Otherwise (nothing cached, not licensed) it describes the
+     * installed version from the plugin header, without a download link. Never
+     * fetches. `external` keeps the modal from linking to wordpress.org.
+     *
+     * @param  false|object|array<string, mixed>  $result
+     * @param  string  $action
+     * @param  object|array<string, mixed>  $args
+     * @return false|object|array<string, mixed>
+     */
+    public function pluginInformation($result, $action = '', $args = null)
+    {
+        $slug = is_object($args) ? ($args->slug ?? '') : (is_array($args) ? ($args['slug'] ?? '') : '');
+
+        if ($action !== 'plugin_information' || $slug !== dirname($this->pluginBasename)) {
+            return $result;
+        }
+
+        $manifest = $this->cachedManifest();
+        $payload = is_array($manifest['manifest'] ?? null) ? $manifest['manifest'] : [];
+
+        if (empty($payload['version'])) {
+            $payload = [];
+        }
+
+        $header = [];
+
+        if (function_exists('get_plugins')) {
+            $header = get_plugins()[$this->pluginBasename] ?? [];
+        }
+
+        $sections = [];
+
+        if (! empty($payload['changelog'])) {
+            $sections['changelog'] = nl2br(esc_html((string) $payload['changelog']));
+        } elseif (! empty($header['Description'])) {
+            $sections['description'] = esc_html((string) $header['Description']);
+        }
+
+        $version = (string) ($payload['version'] ?? '');
+
+        if ($version === '') {
+            $version = (string) ($header['Version'] ?? '');
+        }
+
+        if ($version === '') {
+            $version = $this->config->currentVersion();
+        }
+
+        $info = [
+            'name' => (string) ($header['Name'] ?? $payload['plugin']['name'] ?? $slug),
+            'slug' => $slug,
+            'version' => $version,
+            'author' => (string) ($header['Author'] ?? ''),
+            'homepage' => (string) ($header['PluginURI'] ?? ''),
+            'requires' => (string) ($payload['requires'] ?? $header['RequiresWP'] ?? ''),
+            'requires_php' => (string) ($payload['requires_php'] ?? $header['RequiresPHP'] ?? ''),
+            'tested' => (string) ($payload['tested'] ?? ''),
+            'last_updated' => (string) ($payload['released_at'] ?? ''),
+            'sections' => $sections,
+            'external' => true,
+        ];
+
+        $package = (string) ($payload['plugin']['url'] ?? '');
+
+        if ($package !== '' && ! empty($manifest['update_available'])
+            && version_compare($this->config->currentVersion(), $version, '<')) {
+            $info['download_link'] = $package;
+        }
+
+        return (object) $info;
+    }
+
+    /**
+     * Listener for `wp_premium_sdk/license_changed`: the license this product's
+     * updates depend on changed, so drop the cached manifest and any backoff.
+     */
+    public function onLicenseChanged(string $productSlug): void
+    {
+        if ($productSlug === $this->config->productSlug()) {
+            $this->flush();
+        }
+    }
+
+    /**
+     * Listener for `upgrader_process_complete`: when WordPress has just updated
+     * (or replaced) this plugin, drop the cached manifest, which still describes
+     * the version that was installed before and would offer it again.
+     *
+     * @param  mixed  $upgrader
+     * @param  mixed  $hookExtra
+     */
+    public function onUpgraderProcessComplete($upgrader, $hookExtra = []): void
+    {
+        if (! is_array($hookExtra) || ($hookExtra['type'] ?? '') !== 'plugin') {
+            return;
+        }
+
+        $plugins = (array) ($hookExtra['plugins'] ?? []);
+
+        if (isset($hookExtra['plugin'])) {
+            $plugins[] = $hookExtra['plugin'];
+        }
+
+        $ours = in_array($this->pluginBasename, $plugins, true);
+
+        // "Replace current with uploaded" is an install over the same folder.
+        if (! $ours && ($hookExtra['action'] ?? '') === 'install' && is_object($upgrader)) {
+            $result = $upgrader->result ?? null;
+            $ours = is_array($result) && ($result['destination_name'] ?? '') === dirname($this->pluginBasename);
+        }
+
+        if ($ours) {
+            delete_site_transient($this->cacheKey());
+        }
     }
 
     /**
@@ -123,9 +295,9 @@ class PluginUpdater
         $cacheKey = $this->cacheKey();
 
         if (! $force) {
-            $cached = get_site_transient($cacheKey);
+            $cached = $this->cachedManifest();
 
-            if (is_array($cached)) {
+            if ($cached !== null) {
                 return $cached;
             }
 
@@ -150,7 +322,7 @@ class PluginUpdater
             return null;
         }
 
-        set_site_transient($cacheKey, $manifest, self::SUCCESS_TTL);
+        set_site_transient($cacheKey, ['key_hash' => self::keyHash($licenseKey), 'manifest' => $manifest], self::SUCCESS_TTL);
         delete_site_transient($this->failureCacheKey());
 
         return $manifest;
@@ -158,15 +330,21 @@ class PluginUpdater
 
     /**
      * The manifest from the last successful fetch, without asking Nexus. Null when
-     * none is cached.
+     * none is cached, or when the cached one was fetched with another key than the
+     * one updates now run on (or with none valid).
      *
      * @return array<string, mixed>|null
      */
     public function cachedManifest(): ?array
     {
         $cached = get_site_transient($this->cacheKey());
+        $licenseKey = $this->updateKey();
 
-        return is_array($cached) ? $cached : null;
+        if (! is_array($cached) || ! is_array($cached['manifest'] ?? null) || $licenseKey === null) {
+            return null;
+        }
+
+        return hash_equals((string) ($cached['key_hash'] ?? ''), self::keyHash($licenseKey)) ? $cached['manifest'] : null;
     }
 
     /**
@@ -257,7 +435,7 @@ class PluginUpdater
      */
     private function updateKey(): ?string
     {
-        if ($this->keySource !== null && $this->keySource->isNetworkManaged() && $this->keySource->network() !== null) {
+        if ($this->isNetworkWide()) {
             $provided = $this->keySource->provided();
 
             if ($provided === null || ! LicenseManager::isValidLicenseData($this->keySource->network()->mainSiteLicense())) {
@@ -288,9 +466,63 @@ class PluginUpdater
         ], self::FAILURE_RECORD_TTL);
     }
 
+    /**
+     * Take this plugin's update offer out of `response`, leaving a `no_update`
+     * entry so the row reads "up to date" instead of offering a package.
+     *
+     * @param  object  $transient
+     * @return object
+     */
+    private function withdrawUpdate($transient)
+    {
+        if (isset($transient->response) && is_array($transient->response)) {
+            unset($transient->response[$this->pluginBasename]);
+        }
+
+        $transient->no_update = isset($transient->no_update) && is_array($transient->no_update) ? $transient->no_update : [];
+        $transient->no_update[$this->pluginBasename] = (object) [
+            'slug' => dirname($this->pluginBasename),
+            'plugin' => $this->pluginBasename,
+            'new_version' => $this->config->currentVersion(),
+            'url' => '',
+            'package' => '',
+        ];
+
+        return $transient;
+    }
+
+    /**
+     * What the cache remembers about the key a manifest was fetched with: enough to
+     * tell keys apart, never the key itself.
+     */
+    private static function keyHash(string $licenseKey): string
+    {
+        return hash('sha256', $licenseKey);
+    }
+
+    /**
+     * `wp_premium_sdk_manifest_{product_slug}`, plus `_{blog_id}` on a multisite
+     * where the plugin is activated site by site (each subsite has its own key and
+     * answer). A network-activated plugin shares one network-wide entry, like its
+     * update check.
+     */
     private function cacheKey(): string
     {
-        return self::MANIFEST_CACHE_KEY_PREFIX.$this->config->productSlug();
+        $key = self::MANIFEST_CACHE_KEY_PREFIX.$this->config->productSlug();
+
+        if (is_multisite() && ! $this->isNetworkWide()) {
+            $key .= '_'.get_current_blog_id();
+        }
+
+        return $key;
+    }
+
+    /**
+     * Whether updates run network-wide on the network key (see updateKey()).
+     */
+    private function isNetworkWide(): bool
+    {
+        return $this->keySource !== null && $this->keySource->isNetworkManaged() && $this->keySource->network() !== null;
     }
 
     private function failureCacheKey(): string

@@ -280,7 +280,7 @@ class NetworkLicenseTest extends TestCase
         $transient = $this->provider()->pluginUpdater()->injectPluginUpdate((object) ['response' => []]);
 
         $this->assertArrayHasKey(SdkFixture::PLUGIN, $transient->response, 'A subsite without a seat still sees the update.');
-        $this->assertStringContainsString('license_key=NET-KEY-0014', WpStub::$requestLog[count(WpStub::$requestLog) - 1]['url']);
+        $this->assertSame('NET-KEY-0014', WpStub::$requestLog[count(WpStub::$requestLog) - 1]['args']['headers']['X-License-Key']);
     }
 
     public function test_no_update_when_the_main_site_is_not_licensed(): void

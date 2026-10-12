@@ -49,7 +49,7 @@ class TierPackageInstallerTest extends TestCase
 
     public function test_a_mismatch_is_read_from_the_cached_manifest(): void
     {
-        WpStub::$siteTransients[self::MANIFEST_KEY] = ['success' => true, 'update_available' => false, 'tier_slug' => 'pro'];
+        $this->cacheManifest(['success' => true, 'update_available' => false, 'tier_slug' => 'pro']);
 
         $this->assertSame(['installed' => 'basic', 'licensed' => 'pro'], $this->installer->tierMismatch());
         $this->assertSame([], WpStub::$requestLog, 'No request for the mismatch.');
@@ -59,20 +59,20 @@ class TierPackageInstallerTest extends TestCase
     {
         $this->assertNull($this->installer->tierMismatch(), 'Nothing cached.');
 
-        WpStub::$siteTransients[self::MANIFEST_KEY] = ['success' => true, 'tier_slug' => 'basic'];
+        $this->cacheManifest(['success' => true, 'tier_slug' => 'basic']);
         $this->assertNull($this->installer->tierMismatch());
 
-        WpStub::$siteTransients[self::MANIFEST_KEY] = ['success' => true, 'update_available' => false];
+        $this->cacheManifest(['success' => true, 'update_available' => false]);
         $this->assertNull($this->installer->tierMismatch(), 'An older Nexus that names no tier.');
 
         $this->build('');
-        WpStub::$siteTransients[self::MANIFEST_KEY] = ['success' => true, 'tier_slug' => 'pro'];
+        $this->cacheManifest(['success' => true, 'tier_slug' => 'pro']);
         $this->assertNull($this->installer->tierMismatch(), 'The host did not say which tier is installed.');
     }
 
     public function test_get_status_exposes_tier_mismatch(): void
     {
-        WpStub::$siteTransients[self::MANIFEST_KEY] = ['success' => true, 'tier_slug' => 'pro'];
+        $this->cacheManifest(['success' => true, 'tier_slug' => 'pro']);
         WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
 
         $response = $this->call('get_status');
@@ -82,7 +82,7 @@ class TierPackageInstallerTest extends TestCase
 
     public function test_it_installs_the_licensed_package_and_clears_the_cache(): void
     {
-        WpStub::$siteTransients[self::MANIFEST_KEY] = ['success' => true, 'tier_slug' => 'pro'];
+        $this->cacheManifest(['success' => true, 'tier_slug' => 'pro']);
         WpStub::$siteTransients[self::MANIFEST_KEY.'_failure'] = ['failures' => 1, 'retry_at' => time() + 3600, 'error_code' => 'server_error'];
         $this->queueManifest('pro');
 
@@ -190,6 +190,16 @@ class TierPackageInstallerTest extends TestCase
         $this->assertSame(LicenseErrorCode::RATE_LIMITED, $response['data']['code']);
         $this->assertEqualsWithDelta(600, $response['data']['retry_after'], 2);
         $this->assertSame([], WpStub::$requestLog);
+    }
+
+    /**
+     * Cache a manifest as PluginUpdater stores it: fetched with this site's key.
+     *
+     * @param  array<string, mixed>  $manifest
+     */
+    private function cacheManifest(array $manifest): void
+    {
+        WpStub::$siteTransients[self::MANIFEST_KEY] = ['key_hash' => hash('sha256', 'KEY-001'), 'manifest' => $manifest];
     }
 
     private function queueManifest(string $tier): void
