@@ -29,6 +29,10 @@ All notable changes to this package are documented here. The format follows
 - `SodiumEncryptor` takes `$networkWide`, keeping its no-salts fallback key in a site option, so a value it encrypts reads back on every subsite. (#17)
 - Error codes `key_from_constant`, `network_managed`, `domain_unchanged`, `file_mods_disabled`, `filesystem_credentials_needed`, `installed_tier_unknown`, `licensed_tier_unknown`, `package_unavailable`, `install_failed`, carried by the new `LicenseActionException`.
 - `PremiumServiceProvider` accessors `keySource()`, `networkLicense()`, `autoActivator()`, `tierPackageInstaller()`.
+- `LicenseManager::replaceKey()`: activates a new key, then releases the old key's seat on this domain once that worked, returning `license` and `released` (`{removed_remotely, error_code}` or null). (#30)
+- State codes `key_unreadable` (a stored key that no longer decrypts) and `not_activated_here` (Nexus said this domain holds no activation on a license that is otherwise fine). (#29, #37)
+- The product-scoped activation gate `wp_premium_sdk/{product_slug}/activation_gate` (`$error`, `$licenseData`, `$productSlug`); `LicenseClient::productSlug()`. (#38)
+- `get_status` returns `fresh` (whether Nexus answered just now) and `retry_at` (until when Nexus asked us to wait), and takes body `force=1` for a "check now". `LicenseManager::retryAt()`, `MIN_REFRESH_INTERVAL`, `MAX_RETRY_WAIT`. (#39)
 
 ### Changed
 
@@ -44,16 +48,24 @@ All notable changes to this package are documented here. The format follows
 - `uninstall()` also deletes the network key and its fallback cipher key on a multisite. (#17)
 - `LicenseEndpoints` and `LicenseBootstrap` take the new services in their constructors; `PremiumServiceProvider` wires them. `AbstractAjaxEndpoint` gains `requiredCapability()`. `LicenseManager::releaseSeat()` is public.
 - README: fixed the non-existent `deactivateAndCleanup()` and `removeAll()` examples, documented `uninstall()`, the sign-in flow, the new sub-actions and the full data model. (#21)
+- `refreshStatus(int $minInterval = 0)` returns whether Nexus answered. It makes no call while a `Retry-After` wait from Nexus runs (stored as `retry_at`, at most a day), and none when the last check was under `$minInterval` seconds ago; `get_status` passes 60 unless forced, so reloading or polling the license page no longer asks Nexus every time. (#39)
+- The `activate` and `activate_license` sub-actions also return `released`. (#30)
+- `classify()` precedence: `key_unreadable` first, and `not_activated_here` between `over_limit` and `expiring_soon`. (#29, #37)
 
 ### Fixed
 
 - On a network, a subsite activated with a key of its own before the plugin was network-activated keeps it. `activate_all`, `activate_sites` and the subsite's own admin load no longer replace it with the network key (which left its seat on the old key taken), and it no longer counts as waiting. The network `get_status` reports `has_own_key` per subsite and `subsites_own_key` in the seat summary. The new network sub-action `switch_to_network_key` (`blog_ids`) moves such subsites to the network key on purpose: it activates the network key first, then releases the own key's seat, reporting `released` per subsite. (#24)
 - `Request::normaliseDomain()` drops any port, not just `:80` and `:443`, matching `currentDomain()`. A network subsite on a site served on a port (e.g. `localhost:8890`) now counts as holding the seat it activated. (#25)
 - `PremiumServiceProvider::uninstall()` also deletes the network's new-sites list (`{option_key}_network_new_sites`). (#26)
+- A stored key that can no longer be decrypted (rotated salts, a lost `{option_key}_cipher`) no longer makes `getLicenseData()` and the `get_status`, `list_sites` and `remove_site` sub-actions fail with a `TypeError`. `license_key_masked` is left out, `isValid()` is false (so updates no longer run with a null key), and `classify()` returns `key_unreadable` so the host can ask for the key again. (#29)
+- Activating a different key on the license page, in the account picker or through a single-license sign-in releases the old key's seat on this domain, instead of leaving it taken on Nexus. (#30)
+- `validate()` from a domain without an activation (a staging clone) no longer stores `domain_not_allowed` as an `invalid` license that the next `refreshStatus()` flips back to `active`: the status stays, `site.active` becomes false and `classify()` says `not_activated_here`. (#37)
+- One plugin's activation gate can no longer veto another product's activation: gates go on the product-scoped filter, and the shared one is told the product slug. (#38)
 
 ### Deprecated
 
 - `Request::useNetworkLicenceFor()` does nothing and will be removed in a later release. (#7)
+- The shared `wp_premium_sdk/activation_gate` filter. It still runs (after the scoped one, with the product slug as a third argument) and will be removed in a later release; use `wp_premium_sdk/{product_slug}/activation_gate`. (#38)
 
 ### Removed
 

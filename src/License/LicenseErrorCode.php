@@ -50,6 +50,20 @@ final class LicenseErrorCode
     /** Stored status is present but unrecognized — safe catch-all. */
     public const INVALID = 'invalid';
 
+    /**
+     * A key is stored but can no longer be decrypted (the WordPress salts changed,
+     * or the `{option_key}_cipher` fallback key was lost). The host asks for the key
+     * again; nothing that needs the key works until then.
+     */
+    public const KEY_UNREADABLE = 'key_unreadable';
+
+    /**
+     * The license is fine, but Nexus says this site's domain holds no activation on
+     * it (`domain_not_allowed`), e.g. a staging copy cloned from production. The
+     * host offers "Activate here" or "Move license" (see domainChange()).
+     */
+    public const NOT_ACTIVATED_HERE = 'not_activated_here';
+
     // --- ACTION error codes (emitted by Nexus on activate/validate/deactivate) -
 
     /** The supplied key does not exist / is malformed. */
@@ -161,6 +175,8 @@ final class LicenseErrorCode
             self::OVER_LIMIT,
             self::NOT_ACTIVATED,
             self::INVALID,
+            self::KEY_UNREADABLE,
+            self::NOT_ACTIVATED_HERE,
             self::INVALID_KEY,
             self::KEY_DISABLED,
             self::ACTIVATION_LIMIT_REACHED,

@@ -91,10 +91,13 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
             return;
         }
 
-        $data = $this->manager->activate($licenseKey);
+        // A different key replaces the one stored: its seat on this domain is
+        // handed back once the new key is active (`released`, null when there was
+        // nothing to release).
+        $result = $this->manager->replaceKey($licenseKey);
         $this->updater->flush();
 
-        $this->successResponse(['license' => $data]);
+        $this->successResponse(['license' => $result['license'], 'released' => $result['released']]);
     }
 
     protected function deactivate(): void
@@ -183,15 +186,24 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
     protected function getStatus(): void
     {
         // Re-check with the server on load so a renewal (or revocation) made on
-        // the server side is reflected, instead of trusting the local cache.
-        if ($this->manager->isActivated()) {
-            $this->manager->refreshStatus();
-        }
+        // the server side is reflected, instead of trusting the local cache — but
+        // at most once a minute, unless the body says `force` (a "check now"
+        // button), and never while Nexus has asked us to wait.
+        $force = in_array((string) Request::get('force', ''), ['1', 'true'], true);
+        $fresh = $this->manager->isActivated()
+            && $this->manager->refreshStatus($force ? 0 : LicenseManager::MIN_REFRESH_INTERVAL);
 
         $this->successResponse([
             'is_activated' => $this->manager->isActivated(),
             'is_valid' => $this->manager->isValid(),
             'license' => $this->manager->getLicenseData(),
+            // Whether Nexus answered just now; false when the stored license was
+            // used (checked under a minute ago, rate limited, or unreachable).
+            // `license.last_success_at` says when it last answered.
+            'fresh' => $fresh,
+            // When Nexus rate limited the last check, the time it asked us to wait
+            // until (no check before then, even forced), else null.
+            'retry_at' => $this->manager->retryAt(),
             // The one state the UI should show (see LicenseManager::classify()).
             'state' => $this->manager->classify(),
             'installed_features' => $this->installer->installedModules(),

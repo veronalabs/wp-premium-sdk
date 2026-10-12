@@ -150,12 +150,13 @@ class AccountEndpoints extends AbstractAjaxEndpoint
             return;
         }
 
-        $data = $this->licenseManager->activate($licenseKey);
+        // Replaces any key stored before, handing its seat on this domain back.
+        $result = $this->licenseManager->replaceKey($licenseKey);
 
         // The sign-in has done its job; from here on the license key is enough.
         $this->manager->endSignIn();
 
-        $this->successResponse(['license' => $data]);
+        $this->successResponse(['license' => $result['license'], 'released' => $result['released']]);
     }
 
     /**

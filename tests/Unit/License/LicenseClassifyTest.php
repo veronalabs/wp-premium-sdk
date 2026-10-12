@@ -254,13 +254,16 @@ class LicenseClassifyTest extends TestCase
 
     /**
      * Seed the license store with a stored shape (always with a key so it counts
-     * as activated). classify() never decrypts the key, so any non-empty value works.
+     * as activated). The key is encrypted for real: one that does not decrypt is
+     * `key_unreadable`.
      *
      * @param  array<string, mixed>  $overrides
      */
     private function seed(array $overrides): void
     {
-        $this->store->set('license', array_merge(['license_key' => 'enc-key'], $overrides));
+        $key = (new SodiumEncryptor('wp_statistics_premium_cipher'))->encrypt('KEY-0001');
+
+        $this->store->set('license', array_merge(['license_key' => $key], $overrides));
     }
 
     /**
