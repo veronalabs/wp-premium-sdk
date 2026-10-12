@@ -30,9 +30,9 @@ use VeronaLabs\WpPremiumSdk\Store\PremiumStore;
  * the picker, or by key — LicenseManager calls endSignIn()), signing out, and the
  * session passing its `expires_at`, which is checked on every read.
  *
- * The session belongs to the WordPress user who started it (`user_id`). Only that
- * user sees it: for any other admin isConnected() is false, there is no user or
- * pending choice, and the picker actions answer `sign_in_other_user`.
+ * The session belongs to the site, not to the WordPress user who started it: the
+ * licenses are on one Nexus account, so every admin with `manage_options` sees the
+ * same sign-in, picker and sign-in error.
  *
  * The access token is encrypted at rest. License keys never leave the server and
  * are not stored with the session: the pending choice and every list the picker
@@ -121,7 +121,6 @@ class AccountManager
         $now = time();
 
         $this->storeSession([
-            'user_id' => (int) get_current_user_id(),
             'access_token' => $this->encryptor->encrypt($accessToken),
             'user' => [
                 'email' => $user['email'] ?? '',
@@ -191,18 +190,17 @@ class AccountManager
     {
         $session = $this->session();
 
-        return ! empty($session['access_token']) && $this->belongsToCurrentUser($session);
+        return ! empty($session['access_token']);
     }
 
     /**
-     * The decrypted access token, or null when there is none, it has expired, or
-     * another user started the sign-in.
+     * The decrypted access token, or null when there is none or it has expired.
      */
     public function getAccessToken(): ?string
     {
         $session = $this->session();
 
-        if (empty($session['access_token']) || ! $this->belongsToCurrentUser($session)) {
+        if (empty($session['access_token'])) {
             return null;
         }
 
@@ -216,17 +214,6 @@ class AccountManager
     public function hasSession(): bool
     {
         return $this->lapsed || ! empty($this->session()['access_token']);
-    }
-
-    /**
-     * Whether a sign-in is in progress for another WordPress user. Such a session
-     * stays out of this user's way: they see the normal activation screen.
-     */
-    public function isSignInOfOtherUser(): bool
-    {
-        $session = $this->session();
-
-        return ! empty($session['access_token']) && ! $this->belongsToCurrentUser($session);
     }
 
     /**
@@ -288,13 +275,7 @@ class AccountManager
      */
     public function getUser(): ?array
     {
-        $session = $this->session();
-
-        if (! $this->belongsToCurrentUser($session)) {
-            return null;
-        }
-
-        $user = $session['user'] ?? null;
+        $user = $this->session()['user'] ?? null;
 
         if (! is_array($user) || empty($user['email'])) {
             return null;
@@ -320,13 +301,7 @@ class AccountManager
      */
     public function getPendingChoice(): ?array
     {
-        $session = $this->session();
-
-        if (! $this->belongsToCurrentUser($session)) {
-            return null;
-        }
-
-        $choice = $session['pending_choice'] ?? null;
+        $choice = $this->session()['pending_choice'] ?? null;
 
         if (! is_array($choice) || $choice === []) {
             return null;
@@ -418,11 +393,6 @@ class AccountManager
     public function consumeFlashErrorDetail(): ?array
     {
         $session = $this->session();
-
-        if (! $this->belongsToCurrentUser($session)) {
-            return null;
-        }
-
         $error = $session['flash_error'] ?? null;
 
         if ($error === null || ! $session) {
@@ -442,24 +412,13 @@ class AccountManager
     }
 
     /**
-     * Keep a sign-in error for the user who is signing in. Another admin's open
-     * sign-in is left alone; a leftover error of another user's is replaced.
+     * Keep a sign-in error for the next admin who opens the license page.
      *
      * @param  array<string, mixed>  $extra
      */
     public function setFlashError(string $message, string $code = self::ERROR_CODE, array $extra = []): void
     {
         $session = $this->session() ?? [];
-
-        if (! $this->belongsToCurrentUser($session)) {
-            if (! empty($session['access_token'])) {
-                return;
-            }
-
-            $session = [];
-        }
-
-        $session['user_id'] = $session['user_id'] ?? (int) get_current_user_id();
         $session['flash_error'] = $message;
         $session['flash_error_code'] = $code;
         $session['flash_error_extra'] = $extra;
@@ -510,20 +469,6 @@ class AccountManager
         $session = $this->session();
 
         return ! empty($session['access_token']) ? $this->encryptor->decrypt($session['access_token']) : null;
-    }
-
-    /**
-     * A session stored before `user_id` existed belongs to whoever asks.
-     *
-     * @param  array<string, mixed>|null  $session
-     */
-    private function belongsToCurrentUser(?array $session): bool
-    {
-        if (! is_array($session) || ! isset($session['user_id'])) {
-            return true;
-        }
-
-        return (int) $session['user_id'] === (int) get_current_user_id();
     }
 
     /**

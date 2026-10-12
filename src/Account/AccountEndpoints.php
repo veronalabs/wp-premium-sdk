@@ -67,10 +67,6 @@ class AccountEndpoints extends AbstractAjaxEndpoint
 
     protected function logout(): void
     {
-        if ($this->refuseOtherUsersSignIn()) {
-            return;
-        }
-
         $this->manager->logout();
         $this->successResponse(['connected' => false]);
     }
@@ -95,10 +91,6 @@ class AccountEndpoints extends AbstractAjaxEndpoint
      */
     protected function fetchLicenses(): void
     {
-        if ($this->refuseOtherUsersSignIn()) {
-            return;
-        }
-
         $licenses = $this->accountLicenses();
 
         if ($licenses === null) {
@@ -113,10 +105,6 @@ class AccountEndpoints extends AbstractAjaxEndpoint
      */
     protected function activateLicense(): void
     {
-        if ($this->refuseOtherUsersSignIn()) {
-            return;
-        }
-
         $licenseId = (string) Request::get('license_id', '');
         // A key the user typed is still accepted; the picker sends license_id.
         $licenseKey = $licenseId === '' ? (string) Request::get('license_key', '') : $this->keyForLicenseId($licenseId);
@@ -150,10 +138,6 @@ class AccountEndpoints extends AbstractAjaxEndpoint
      */
     protected function removeSite(): void
     {
-        if ($this->refuseOtherUsersSignIn()) {
-            return;
-        }
-
         $licenseId = (string) Request::get('license_id', '');
         $domain = (string) Request::get('domain', '');
 
@@ -280,25 +264,5 @@ class AccountEndpoints extends AbstractAjaxEndpoint
         $licenses = $response['data'] ?? $response['licenses'] ?? [];
 
         return is_array($licenses) ? $licenses : [];
-    }
-
-    /**
-     * Another admin's sign-in is in progress: this user gets the normal activation
-     * screen, never that user's licenses.
-     *
-     * @return bool Whether the call was refused (the response is sent).
-     */
-    private function refuseOtherUsersSignIn(): bool
-    {
-        if (! $this->manager->isSignInOfOtherUser()) {
-            return false;
-        }
-
-        $this->errorResponse(
-            __('Another administrator is signing in to the account.', $this->config->textDomain()),
-            LicenseErrorCode::SIGN_IN_OTHER_USER
-        );
-
-        return true;
     }
 }

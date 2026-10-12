@@ -85,26 +85,13 @@ class PremiumStoreTest extends TestCase
         $this->assertFalse($this->store->verifyOAuthState('state-abc'), 'State should be consumed on first verify.');
     }
 
-    public function test_oauth_state_only_completes_for_the_user_who_asked_for_it(): void
+    public function test_any_admin_can_complete_the_sites_oauth_state(): void
     {
         WpStub::$currentUserId = 1;
         $this->store->setOAuthState('state-abc');
 
         WpStub::$currentUserId = 2;
-        $this->assertFalse($this->store->verifyOAuthState('state-abc'), 'Another user cannot complete it.');
-
-        WpStub::$currentUserId = 0;
-        $this->assertFalse($this->store->verifyOAuthState('state-abc'), 'Nor can a logged-out request.');
-
-        WpStub::$currentUserId = 1;
-        $this->assertTrue($this->store->verifyOAuthState('state-abc'), 'It is left in place for the user who asked.');
-    }
-
-    public function test_an_oauth_state_stored_before_it_carried_a_user_is_still_accepted(): void
-    {
-        set_transient('wp_statistics_oauth_state_state-old', true, 600);
-
-        $this->assertTrue($this->store->verifyOAuthState('state-old'));
+        $this->assertTrue($this->store->verifyOAuthState('state-abc'));
     }
 
     public function test_unknown_state_fails_verification(): void

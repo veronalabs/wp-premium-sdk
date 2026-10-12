@@ -220,26 +220,12 @@ class AccountSignInTest extends TestCase
         $this->assertCount(0, WpStub::$requestLog);
     }
 
-    public function test_a_leftover_error_of_another_user_does_not_hide_this_users_error(): void
+    public function test_a_sign_in_error_is_shown_to_any_admin(): void
     {
-        $this->store->set('account', ['user_id' => 0, 'flash_error' => 'Invalid or expired OAuth state.']);
-
         $this->account->setFlashError('This sign-in code is not valid for this product.', LicenseErrorCode::WRONG_PRODUCT);
 
-        $this->assertSame(1, $this->store->get('account')['user_id']);
-        $this->assertSame('This sign-in code is not valid for this product.', $this->account->consumeFlashError());
-    }
-
-    public function test_an_error_never_lands_on_another_admins_open_sign_in(): void
-    {
-        $this->signIn([], [['id' => 11, 'key' => 'KEY-1'], ['id' => 12, 'key' => 'KEY-2']]);
-
         WpStub::$currentUserId = 2;
-        $this->account->setFlashError('Invalid or expired OAuth state.');
-
-        WpStub::$currentUserId = 1;
-        $this->assertNull($this->account->consumeFlashErrorDetail());
-        $this->assertTrue($this->account->isConnected());
+        $this->assertSame('This sign-in code is not valid for this product.', $this->account->consumeFlashError());
     }
 
     // --- #32: sign-in outcomes carry a code ----------------------------------
@@ -427,14 +413,19 @@ class AccountSignInTest extends TestCase
         $this->assertSame(LicenseErrorCode::LICENSE_SUSPENDED, $response['data']['code']);
     }
 
-    public function test_another_admin_cannot_remove_a_site(): void
+    public function test_another_admin_can_remove_a_site_from_the_sites_sign_in(): void
     {
-        $this->signIn([], [['id' => 11, 'key' => 'KEY-1'], ['id' => 12, 'key' => 'KEY-2']]);
+        $full = [['id' => 11, 'key' => 'KEY-1', 'activations' => [['domain' => 'old.example']]], ['id' => 12, 'key' => 'KEY-2']];
+        $this->signIn([], $full);
         WpStub::$currentUserId = 2;
 
+        WpStub::queueJson(200, ['data' => $full]);        // look up the key
+        WpStub::queueJson(200, ['success' => true]);       // license/deactivate
+        WpStub::queueJson(200, ['data' => $full]);        // the refreshed list
         $response = $this->call('remove_site', ['license_id' => '11', 'domain' => 'old.example']);
 
-        $this->assertSame(LicenseErrorCode::SIGN_IN_OTHER_USER, $response['data']['code']);
+        $this->assertTrue($response['success']);
+        $this->assertSame('old.example', $response['data']['removed']);
     }
 
     /**

@@ -232,12 +232,12 @@ The sign-in is a one-time step, not a stored connection:
 1. User clicks "Sign in" → JS calls the `init_oauth` AJAX sub-action → receives `authorize_url`.
 2. Browser navigates to Nexus.
 3. Nexus redirects back with `?{code_param}=...&{state_param}=...`.
-4. `AccountBootstrap::handleOAuthCallback()` detects the params on `admin_init` and exchanges the code for a token. It runs only for a user with `manage_options`, and the state only completes for the user who asked for it. With one license it activates it straight away; with several, or when that activation fails, it stores them as a pending choice for the picker.
+4. `AccountBootstrap::handleOAuthCallback()` detects the params on `admin_init` and exchanges the code for a token. It runs only for a user with `manage_options`. With one license it activates it straight away; with several, or when that activation fails, it stores them as a pending choice for the picker.
 5. Once a license is activated (here or through `activate_license`), the token is revoked on Nexus (best-effort, 5-second timeout, never failing the activation) and the session — token, user, pending choice, flash error — is deleted. From then on everything runs on the license key.
 
 Every way out of the picker deletes the session: activating a license by any path (the provider hooks `endSignIn()` to `LicenseManager::onActivated()`, so a key typed on the license page, a wp-config constant or a network key ends it too), signing out, and the session passing its `expires_at` — checked on every read, so an abandoned picker stops counting without waiting for a 401.
 
-The exchange sends `device_name` (this site's domain). The session stores `user_id`, the WordPress user who started it; only that user sees it. Any other admin gets `connected: false` and no user from `get_status` (the normal activation screen), and `fetch_licenses`, `activate_license`, `remove_site` and `logout` answer `sign_in_other_user`.
+The exchange sends `device_name` (this site's domain). The session belongs to the site, not to the admin who started it: the licenses are on one Nexus account, so every admin with `manage_options` sees the same sign-in, picker and sign-in error.
 
 License keys never reach the browser and are not stored with the session. The pending choice, `fetch_licenses` and `remove_site` give each license without `key` / `license_key`, with an `id` (Nexus's license id) and `license_key_masked` (last four characters). `activate_license` and `remove_site` take that `license_id`, and the SDK looks the key up again in the signed-in user's account.
 
@@ -414,11 +414,9 @@ Registered on multisite only. Nonce action `{ajax_action}_network_license` (or `
 | `init_oauth` | Returns `authorize_url` + `state`. |
 | `logout` | Clears the account session. |
 | `get_status` | Returns `connected` (a sign-in is in progress), `user`, `pending_choice` (the picker's licenses without keys, or null) and the one-shot sign-in error: `oauth_error` (message), `oauth_error_code` and `oauth_error_extra` (null when there is none). |
-| `fetch_licenses` | Lists the signed-in user's licenses for the picker, each with `id` and `license_key_masked`, never the key. Fails with `account_expired` when the sign-in has lapsed, `sign_in_other_user` when another admin started it. |
+| `fetch_licenses` | Lists the signed-in user's licenses for the picker, each with `id` and `license_key_masked`, never the key. Fails with `account_expired` when the sign-in has lapsed. |
 | `activate_license` | Body: `license_id` (a key the user typed is still accepted as `license_key`). Activates it and ends the sign-in. A `license_id` not on the account answers `account_error`. |
 | `remove_site` | Body: `license_id`, `domain`. Frees a seat for this site: releases `domain` from that license on the signed-in user's account, then returns `removed` and the refreshed `licenses`. This site is refused with code `this_site`; Nexus's refusal comes back with its code. Retry `activate_license` afterwards. |
-
-`fetch_licenses`, `activate_license`, `remove_site` and `logout` answer `sign_in_other_user` for an admin other than the one signing in.
 
 Nonce action: `{ajax_action}_account` (or `nonce_action` when set). Capability: `manage_options`.
 
@@ -501,7 +499,6 @@ Everything the SDK stores lives in one `wp_options` row (keyed by `ClientConfig:
         'error_code'      => 'activation_limit_reached',
     ],
     'account' => [                            // only while a sign-in is in progress
-        'user_id'        => 1,                // the WordPress user who started it; only they see it
         'access_token'   => '<sodium ciphertext>',
         'user'           => ['email' => 'buyer@example.com', 'name' => 'Ada Buyer'],
         'connected_at'   => 1713484800,

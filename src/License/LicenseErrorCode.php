@@ -100,8 +100,10 @@ final class LicenseErrorCode
     public const ACCOUNT_EXPIRED = 'account_expired';
 
     /**
-     * The account sign-in in progress was started by another WordPress user; this
-     * user gets the normal activation screen instead of their licenses.
+     * No longer sent: the account sign-in belongs to the site, so every admin
+     * sees it. Kept so hosts that map it keep working.
+     *
+     * @deprecated
      */
     public const SIGN_IN_OTHER_USER = 'sign_in_other_user';
 

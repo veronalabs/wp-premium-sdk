@@ -66,30 +66,19 @@ class PremiumStore
         $this->cache = [];
     }
 
-    /**
-     * Remember a one-time OAuth CSRF state token, with the WordPress user who asked
-     * for it: only that user can complete the sign-in it starts.
-     */
     public function setOAuthState(string $state): void
     {
-        set_transient($this->config->oauthStatePrefix().$state, ['user_id' => (int) get_current_user_id()], self::OAUTH_STATE_TTL);
+        set_transient($this->config->oauthStatePrefix().$state, true, self::OAUTH_STATE_TTL);
     }
 
     /**
-     * Verify and consume a one-time OAuth CSRF state token. Another user's token is
-     * refused and left in place, so the user who asked for it can still use it. A
-     * token stored before it carried a user (plain `true`) is accepted from anyone.
+     * Verify and consume a one-time OAuth CSRF state token.
      */
     public function verifyOAuthState(string $state): bool
     {
         $key = $this->config->oauthStatePrefix().$state;
-        $value = get_transient($key);
 
-        if (! $value) {
-            return false;
-        }
-
-        if (is_array($value) && (int) ($value['user_id'] ?? 0) !== (int) get_current_user_id()) {
+        if (! get_transient($key)) {
             return false;
         }
 

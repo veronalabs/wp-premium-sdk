@@ -38,12 +38,12 @@ class SignInLifetimeTest extends TestCase
         $this->assertSame('example.com/blog', $exchange['device_name']);
     }
 
-    public function test_the_session_records_who_started_it(): void
+    public function test_the_session_is_not_tied_to_the_admin_who_started_it(): void
     {
         WpStub::$currentUserId = 7;
         $this->signIn($this->provider());
 
-        $this->assertSame(7, WpStub::$options[SdkFixture::OPTION]['account']['user_id']);
+        $this->assertArrayNotHasKey('user_id', WpStub::$options[SdkFixture::OPTION]['account']);
     }
 
     public function test_activating_by_key_ends_the_sign_in(): void
@@ -97,33 +97,20 @@ class SignInLifetimeTest extends TestCase
         $this->assertCount($calls, WpStub::$requestLog);
     }
 
-    public function test_another_admin_does_not_see_the_sign_in(): void
+    public function test_every_admin_sees_the_same_sign_in(): void
     {
         WpStub::$currentUserId = 1;
         $this->signIn($this->provider());
         WpStub::$currentUserId = 2;
         $sdk = $this->provider();
 
-        $this->assertFalse($sdk->accountManager()->isConnected());
-        $this->assertNull($sdk->accountManager()->getUser());
-        $this->assertNull($sdk->accountManager()->getPendingChoice());
+        $this->assertTrue($sdk->accountManager()->isConnected());
+        $this->assertNotNull($sdk->accountManager()->getUser());
+        $this->assertNotNull($sdk->accountManager()->getPendingChoice());
 
         $status = $this->ajax($sdk, 'account', 'get_status');
-        $this->assertFalse($status['data']['connected']);
-        $this->assertNull($status['data']['user']);
-
-        $calls = count(WpStub::$requestLog);
-
-        foreach (['fetch_licenses' => [], 'activate_license' => ['license_key' => 'KEY-002'], 'logout' => []] as $subAction => $body) {
-            $response = $this->ajax($sdk, 'account', $subAction, $body);
-            $this->assertSame(LicenseErrorCode::SIGN_IN_OTHER_USER, $response['data']['code'], $subAction);
-        }
-
-        $this->assertCount($calls, WpStub::$requestLog);
-        $this->assertArrayHasKey('account', WpStub::$options[SdkFixture::OPTION], 'The owner\'s sign-in is untouched.');
-
-        WpStub::$currentUserId = 1;
-        $this->assertTrue($this->provider()->accountManager()->isConnected());
+        $this->assertTrue($status['data']['connected']);
+        $this->assertNotNull($status['data']['user']);
     }
 
     public function test_the_owner_still_uses_the_picker(): void
