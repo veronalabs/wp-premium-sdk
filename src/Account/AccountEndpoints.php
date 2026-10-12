@@ -5,6 +5,7 @@ namespace VeronaLabs\WpPremiumSdk\Account;
 use Exception;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Endpoint\AbstractAjaxEndpoint;
+use VeronaLabs\WpPremiumSdk\Http\ApiException;
 use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\License\LicenseManager;
 use VeronaLabs\WpPremiumSdk\Support\Request;
@@ -13,7 +14,12 @@ use VeronaLabs\WpPremiumSdk\Support\Request;
  * AJAX dispatcher for account / OAuth actions.
  *
  * Action: wp_ajax_{prefix}_account
- * Sub-actions: init_oauth, logout, get_status, fetch_licenses, activate_license
+ * Sub-actions: init_oauth, logout, get_status, fetch_licenses, activate_license,
+ *              remove_site
+ *
+ * License keys never reach the browser: licenses go out without them (an `id` and
+ * `license_key_masked` instead), and activate_license / remove_site take that
+ * `license_id` and look the key up again in the signed-in user's account.
  */
 class AccountEndpoints extends AbstractAjaxEndpoint
 {
@@ -42,6 +48,7 @@ class AccountEndpoints extends AbstractAjaxEndpoint
             'get_status' => 'getStatus',
             'fetch_licenses' => 'fetchLicenses',
             'activate_license' => 'activateLicense',
+            'remove_site' => 'removeSite',
         ];
     }
 
@@ -60,21 +67,22 @@ class AccountEndpoints extends AbstractAjaxEndpoint
 
     protected function logout(): void
     {
-        if ($this->refuseOtherUsersSignIn()) {
-            return;
-        }
-
         $this->manager->logout();
         $this->successResponse(['connected' => false]);
     }
 
     protected function getStatus(): void
     {
+        $error = $this->manager->consumeFlashErrorDetail();
+
         $this->successResponse([
             'logged_in' => $this->manager->isConnected(),
             'connected' => $this->manager->isConnected(),
             'user' => $this->manager->getUser(),
-            'oauth_error' => $this->manager->consumeFlashError(),
+            'oauth_error' => $error['message'] ?? null,
+            'oauth_error_code' => $error['code'] ?? null,
+            'oauth_error_extra' => $error['extra'] ?? null,
+            'pending_choice' => $this->manager->getPendingChoice(),
         ]);
     }
 
@@ -83,10 +91,157 @@ class AccountEndpoints extends AbstractAjaxEndpoint
      */
     protected function fetchLicenses(): void
     {
-        if ($this->refuseOtherUsersSignIn()) {
+        $licenses = $this->accountLicenses();
+
+        if ($licenses === null) {
             return;
         }
 
+        $this->successResponse(['licenses' => $this->manager->publicLicenses($licenses)]);
+    }
+
+    /**
+     * @throws Exception
+     */
+    protected function activateLicense(): void
+    {
+        $licenseId = (string) Request::get('license_id', '');
+        // A key the user typed is still accepted; the picker sends license_id.
+        $licenseKey = $licenseId === '' ? (string) Request::get('license_key', '') : $this->keyForLicenseId($licenseId);
+
+        if ($licenseKey === null) {
+            return;
+        }
+
+        if ($licenseKey === '') {
+            $this->errorResponse(
+                __('License key is required.', $this->config->textDomain()),
+                $this->getErrorCode()
+            );
+
+            return;
+        }
+
+        // Replaces any key stored before, handing its seat on this domain back.
+        $result = $this->licenseManager->replaceKey($licenseKey);
+
+        // The sign-in has done its job; from here on the license key is enough.
+        $this->manager->endSignIn();
+
+        $this->successResponse(['license' => $result['license'], 'released' => $result['released']]);
+    }
+
+    /**
+     * The capability remove_site needs on top of the endpoint's own. The sign-in
+     * belongs to the site, so any admin can use it; releasing a seat touches the
+     * customer's other sites, so it is kept to admins who may also install plugins
+     * (single-site admins can, multisite subsite admins cannot).
+     */
+    public const REMOVE_SITE_CAPABILITY = 'install_plugins';
+
+    /**
+     * Free a seat for this site: release `domain` from the signed-in user's license
+     * `license_id`, then return the account's licenses again. This site is refused.
+     * Needs REMOVE_SITE_CAPABILITY; without it the answer is `forbidden`.
+     *
+     * @throws Exception
+     */
+    protected function removeSite(): void
+    {
+        if (! current_user_can(self::REMOVE_SITE_CAPABILITY)) {
+            $this->errorResponse(
+                __('You do not have permission to remove sites from this license.', $this->config->textDomain()),
+                'forbidden'
+            );
+
+            return;
+        }
+
+        $licenseId = (string) Request::get('license_id', '');
+        $domain = (string) Request::get('domain', '');
+
+        if ($licenseId === '' || $domain === '') {
+            $this->errorResponse(
+                __('License and site domain are required.', $this->config->textDomain()),
+                $this->getErrorCode()
+            );
+
+            return;
+        }
+
+        if ($this->licenseManager->isThisSite($domain)) {
+            $this->errorResponse(__('To remove this site, deactivate the license instead.', $this->config->textDomain()), 'this_site');
+
+            return;
+        }
+
+        $licenseKey = $this->keyForLicenseId($licenseId);
+
+        if ($licenseKey === null) {
+            return;
+        }
+
+        $result = $this->licenseManager->releaseSeat($licenseKey, $domain);
+
+        if (! $result['removed_remotely']) {
+            throw new ApiException(
+                __('Could not remove the site from the license.', $this->config->textDomain()),
+                (string) $result['error_code']
+            );
+        }
+
+        $licenses = $this->accountLicenses();
+
+        if ($licenses === null) {
+            return;
+        }
+
+        if ($this->manager->getPendingChoice() !== null) {
+            $this->manager->setPendingChoice($licenses);
+        }
+
+        $this->successResponse([
+            'removed' => $domain,
+            'licenses' => $this->manager->publicLicenses($licenses),
+        ]);
+    }
+
+    /**
+     * The key of the signed-in user's license `$licenseId`, looked up in the
+     * account; null when the response is already sent.
+     *
+     * @throws Exception
+     */
+    private function keyForLicenseId(string $licenseId): ?string
+    {
+        $licenses = $this->accountLicenses();
+
+        if ($licenses === null) {
+            return null;
+        }
+
+        $key = $this->manager->findLicenseKey($licenses, $licenseId);
+
+        if ($key === null) {
+            $this->errorResponse(
+                __('That license is not on your account.', $this->config->textDomain()),
+                $this->getErrorCode()
+            );
+        }
+
+        return $key;
+    }
+
+    /**
+     * The signed-in user's licenses, keys included (server-side only), or null when
+     * there is no usable sign-in and the error response is sent.
+     *
+     * @throws Exception
+     *
+     * @return array<int, mixed>|null
+     */
+    private function accountLicenses(): ?array
+    {
         $token = $this->manager->getAccessToken();
 
         if (! $token) {
@@ -105,7 +260,7 @@ class AccountEndpoints extends AbstractAjaxEndpoint
                 $lapsed ? LicenseErrorCode::ACCOUNT_EXPIRED : $this->getErrorCode()
             );
 
-            return;
+            return null;
         }
 
         try {
@@ -122,59 +277,11 @@ class AccountEndpoints extends AbstractAjaxEndpoint
                 LicenseErrorCode::ACCOUNT_EXPIRED
             );
 
-            return;
+            return null;
         }
 
         $licenses = $response['data'] ?? $response['licenses'] ?? [];
 
-        $this->successResponse(['licenses' => $licenses]);
-    }
-
-    /**
-     * @throws Exception
-     */
-    protected function activateLicense(): void
-    {
-        if ($this->refuseOtherUsersSignIn()) {
-            return;
-        }
-
-        $licenseKey = Request::get('license_key', '');
-
-        if ($licenseKey === '') {
-            $this->errorResponse(
-                __('License key is required.', $this->config->textDomain()),
-                $this->getErrorCode()
-            );
-
-            return;
-        }
-
-        $data = $this->licenseManager->activate($licenseKey);
-
-        // The sign-in has done its job; from here on the license key is enough.
-        $this->manager->endSignIn();
-
-        $this->successResponse(['license' => $data]);
-    }
-
-    /**
-     * Another admin's sign-in is in progress: this user gets the normal activation
-     * screen, never that user's licenses.
-     *
-     * @return bool Whether the call was refused (the response is sent).
-     */
-    private function refuseOtherUsersSignIn(): bool
-    {
-        if (! $this->manager->isSignInOfOtherUser()) {
-            return false;
-        }
-
-        $this->errorResponse(
-            __('Another administrator is signing in to the account.', $this->config->textDomain()),
-            LicenseErrorCode::SIGN_IN_OTHER_USER
-        );
-
-        return true;
+        return is_array($licenses) ? $licenses : [];
     }
 }

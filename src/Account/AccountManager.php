@@ -6,6 +6,7 @@ use Exception;
 use Throwable;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Encryption\EncryptorInterface;
+use VeronaLabs\WpPremiumSdk\Endpoint\AbstractAjaxEndpoint;
 use VeronaLabs\WpPremiumSdk\Http\ApiException;
 use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\License\LicenseManager;
@@ -29,11 +30,14 @@ use VeronaLabs\WpPremiumSdk\Store\PremiumStore;
  * the picker, or by key — LicenseManager calls endSignIn()), signing out, and the
  * session passing its `expires_at`, which is checked on every read.
  *
- * The session belongs to the WordPress user who started it (`user_id`). Only that
- * user sees it: for any other admin isConnected() is false, there is no user or
- * pending choice, and the picker actions answer `sign_in_other_user`.
+ * The session belongs to the site, not to the WordPress user who started it: the
+ * licenses are on one Nexus account, so every admin with `manage_options` sees the
+ * same sign-in, picker and sign-in error.
  *
- * The access token is encrypted at rest.
+ * The access token is encrypted at rest. License keys never leave the server and
+ * are not stored with the session: the pending choice and every list the picker
+ * gets are publicLicenses() (an `id` and `license_key_masked`, no key), and a key
+ * is looked up again by id from the account when it is needed.
  */
 class AccountManager
 {
@@ -42,6 +46,9 @@ class AccountManager
 
     /** Seconds to wait for Nexus to revoke the token when a sign-in ends. */
     public const REVOKE_TIMEOUT = 5;
+
+    /** The code a sign-in failure carries when the failure has none of its own. */
+    public const ERROR_CODE = 'account_error';
 
     private ClientConfig $config;
     private AccountClient $client;
@@ -114,7 +121,6 @@ class AccountManager
         $now = time();
 
         $this->storeSession([
-            'user_id' => (int) get_current_user_id(),
             'access_token' => $this->encryptor->encrypt($accessToken),
             'user' => [
                 'email' => $user['email'] ?? '',
@@ -131,7 +137,7 @@ class AccountManager
             $licensesResponse = $this->client->licenses($accessToken);
             $licenses = $licensesResponse['data'] ?? $licensesResponse['licenses'] ?? [];
         } catch (Exception $e) {
-            $this->setFlashError(sprintf(
+            $this->setFlashErrorFrom($e, sprintf(
                 __('Could not fetch licenses from your account: %s', $this->config->textDomain()),
                 $e->getMessage()
             ));
@@ -142,7 +148,7 @@ class AccountManager
         $count = count($licenses);
 
         if ($count === 0) {
-            $this->setFlashError(__('Your account has no licenses for this product.', $this->config->textDomain()));
+            $this->setFlashError(__('Your account has no licenses for this product.', $this->config->textDomain()), LicenseErrorCode::NO_LICENSES);
 
             return ['connected' => true, 'licenses' => []];
         }
@@ -152,20 +158,20 @@ class AccountManager
 
             if ($key !== '') {
                 try {
-                    $licenseManager->activate($key);
+                    $licenseManager->replaceKey($key);
                     // Signed in, license picked and activated: the sign-in has
                     // done its job, so it ends here.
                     $this->endSignIn();
 
-                    return ['connected' => false, 'licenses' => $licenses];
+                    return ['connected' => false, 'licenses' => $this->publicLicenses($licenses)];
                 } catch (Exception $e) {
                     // Activation failed (e.g., max_activations reached). Surface
                     // the single license through the picker UI so the user can
-                    // see the error inline and retry / pick another site.
+                    // see the error inline and retry / free a seat (remove_site).
                     $this->setPendingChoice($licenses);
-                    $this->setFlashError($e->getMessage());
+                    $this->setFlashErrorFrom($e);
 
-                    return ['connected' => true, 'licenses' => $licenses];
+                    return ['connected' => true, 'licenses' => $this->publicLicenses($licenses)];
                 }
             }
         }
@@ -173,7 +179,7 @@ class AccountManager
         // 2+ licenses → let the user pick.
         $this->setPendingChoice($licenses);
 
-        return ['connected' => true, 'licenses' => $licenses];
+        return ['connected' => true, 'licenses' => $this->publicLicenses($licenses)];
     }
 
     /**
@@ -184,18 +190,17 @@ class AccountManager
     {
         $session = $this->session();
 
-        return ! empty($session['access_token']) && $this->belongsToCurrentUser($session);
+        return ! empty($session['access_token']);
     }
 
     /**
-     * The decrypted access token, or null when there is none, it has expired, or
-     * another user started the sign-in.
+     * The decrypted access token, or null when there is none or it has expired.
      */
     public function getAccessToken(): ?string
     {
         $session = $this->session();
 
-        if (empty($session['access_token']) || ! $this->belongsToCurrentUser($session)) {
+        if (empty($session['access_token'])) {
             return null;
         }
 
@@ -212,14 +217,13 @@ class AccountManager
     }
 
     /**
-     * Whether a sign-in is in progress for another WordPress user. Such a session
-     * stays out of this user's way: they see the normal activation screen.
+     * Always false: the sign-in belongs to the site, so no admin is shut out of it.
+     *
+     * @deprecated Kept so hosts that still call it keep working.
      */
     public function isSignInOfOtherUser(): bool
     {
-        $session = $this->session();
-
-        return ! empty($session['access_token']) && ! $this->belongsToCurrentUser($session);
+        return false;
     }
 
     /**
@@ -281,13 +285,7 @@ class AccountManager
      */
     public function getUser(): ?array
     {
-        $session = $this->session();
-
-        if (! $this->belongsToCurrentUser($session)) {
-            return null;
-        }
-
-        $user = $session['user'] ?? null;
+        $user = $this->session()['user'] ?? null;
 
         if (! is_array($user) || empty($user['email'])) {
             return null;
@@ -297,12 +295,14 @@ class AccountManager
     }
 
     /**
+     * Store the licenses for the picker, without their keys (see publicLicenses()).
+     *
      * @param  array<int, array<string, mixed>>  $licenses
      */
     public function setPendingChoice(array $licenses): void
     {
         $session = $this->store->get('account') ?? [];
-        $session['pending_choice'] = $licenses;
+        $session['pending_choice'] = $this->publicLicenses($licenses);
         $this->store->set('account', $session);
     }
 
@@ -311,19 +311,63 @@ class AccountManager
      */
     public function getPendingChoice(): ?array
     {
-        $session = $this->session();
-
-        if (! $this->belongsToCurrentUser($session)) {
-            return null;
-        }
-
-        $choice = $session['pending_choice'] ?? null;
+        $choice = $this->session()['pending_choice'] ?? null;
 
         if (! is_array($choice) || $choice === []) {
             return null;
         }
 
+        // session() has already rewritten a choice stored with keys.
         return $choice;
+    }
+
+    /**
+     * Licenses as the browser may see them: each with an `id` to send back and the
+     * key masked to its last four characters (`license_key_masked`); `key` and
+     * `license_key` are removed.
+     *
+     * @param  array<int, mixed>  $licenses
+     * @return array<int, array<string, mixed>>
+     */
+    public function publicLicenses(array $licenses): array
+    {
+        $public = [];
+
+        foreach ($licenses as $license) {
+            if (! is_array($license)) {
+                continue;
+            }
+
+            $key = $this->keyOf($license);
+            $license['id'] = $this->licenseId($license);
+            unset($license['key'], $license['license_key']);
+
+            if ($key !== '') {
+                $license['license_key_masked'] = $this->maskKey($key);
+            }
+
+            $public[] = $license;
+        }
+
+        return $public;
+    }
+
+    /**
+     * The key of the license with this id, from a list fetched from the account.
+     *
+     * @param  array<int, mixed>  $licenses
+     */
+    public function findLicenseKey(array $licenses, string $licenseId): ?string
+    {
+        foreach ($licenses as $license) {
+            if (is_array($license) && $licenseId !== '' && $this->licenseId($license) === $licenseId) {
+                $key = $this->keyOf($license);
+
+                return $key !== '' ? $key : null;
+            }
+        }
+
+        return null;
     }
 
     public function clearPendingChoice(): void
@@ -338,30 +382,72 @@ class AccountManager
         $this->store->set('account', $session);
     }
 
+    /**
+     * The one-shot sign-in error message, or null. See consumeFlashErrorDetail()
+     * for its code.
+     */
     public function consumeFlashError(): ?string
     {
-        $session = $this->session();
+        $error = $this->consumeFlashErrorDetail();
 
-        if (! $this->belongsToCurrentUser($session)) {
+        return $error !== null ? $error['message'] : null;
+    }
+
+    /**
+     * The one-shot sign-in error, or null: `code` (a LicenseErrorCode value, or
+     * `account_error`), `message`, and `extra` (the keys an AJAX error carries for
+     * the same failure, e.g. `renewal`, `retry_after`, `removed_remotely`).
+     *
+     * @return array{code: string, message: string, extra: array<string, mixed>}|null
+     */
+    public function consumeFlashErrorDetail(): ?array
+    {
+        $session = $this->session();
+        $error = $session['flash_error'] ?? null;
+
+        if ($error === null || ! $session) {
             return null;
         }
 
-        $error = $session['flash_error'] ?? null;
+        $detail = [
+            'code' => (string) ($session['flash_error_code'] ?? self::ERROR_CODE),
+            'message' => (string) $error,
+            'extra' => is_array($session['flash_error_extra'] ?? null) ? $session['flash_error_extra'] : [],
+        ];
 
-        if ($error !== null && $session) {
-            unset($session['flash_error']);
-            $this->store->set('account', $session);
-        }
+        unset($session['flash_error'], $session['flash_error_code'], $session['flash_error_extra']);
+        $this->store->set('account', $session);
 
-        return $error;
+        return $detail;
     }
 
-    public function setFlashError(string $message): void
+    /**
+     * Keep a sign-in error for the next admin who opens the license page.
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    public function setFlashError(string $message, string $code = self::ERROR_CODE, array $extra = []): void
     {
         $session = $this->session() ?? [];
-        $session['user_id'] = $session['user_id'] ?? (int) get_current_user_id();
         $session['flash_error'] = $message;
+        $session['flash_error_code'] = $code;
+        $session['flash_error_extra'] = $extra;
         $this->store->set('account', $session);
+    }
+
+    /**
+     * Keep a failure as the sign-in error, with the code and extras an AJAX error
+     * would carry for it.
+     *
+     * @param  string  $message  Replaces the exception's message when given.
+     */
+    public function setFlashErrorFrom(Throwable $e, string $message = ''): void
+    {
+        $this->setFlashError(
+            $message !== '' ? $message : $e->getMessage(),
+            AbstractAjaxEndpoint::errorCodeOf($e, self::ERROR_CODE),
+            AbstractAjaxEndpoint::errorExtra($e)
+        );
     }
 
     /**
@@ -382,7 +468,30 @@ class AccountManager
             return null;
         }
 
+        // A pending choice stored before keys were left out: rewrite the row
+        // without them, so the keys do not sit in wp_options until the sign-in ends.
+        if (is_array($session) && is_array($session['pending_choice'] ?? null) && $this->holdsKeys($session['pending_choice'])) {
+            $session['pending_choice'] = $this->publicLicenses($session['pending_choice']);
+            $this->store->set('account', $session);
+        }
+
         return $session;
+    }
+
+    /**
+     * Whether any license in the list still carries its `key` or `license_key`.
+     *
+     * @param  array<int, mixed>  $licenses
+     */
+    private function holdsKeys(array $licenses): bool
+    {
+        foreach ($licenses as $license) {
+            if (is_array($license) && (array_key_exists('key', $license) || array_key_exists('license_key', $license))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -396,17 +505,42 @@ class AccountManager
     }
 
     /**
-     * A session stored before `user_id` existed belongs to whoever asks.
-     *
-     * @param  array<string, mixed>|null  $session
+     * @param  array<string, mixed>  $license
      */
-    private function belongsToCurrentUser(?array $session): bool
+    private function keyOf(array $license): string
     {
-        if (! is_array($session) || ! isset($session['user_id'])) {
-            return true;
+        return (string) ($license['license_key'] ?? $license['key'] ?? '');
+    }
+
+    /**
+     * Nexus's license id; a license without one gets an id derived from its key
+     * that does not reveal it.
+     *
+     * @param  array<string, mixed>  $license
+     */
+    private function licenseId(array $license): string
+    {
+        if (isset($license['id']) && (is_int($license['id']) || is_string($license['id']))) {
+            return (string) $license['id'];
         }
 
-        return (int) $session['user_id'] === (int) get_current_user_id();
+        $key = $this->keyOf($license);
+
+        return $key !== '' ? 'k'.substr(hash('sha256', $key), 0, 16) : '';
+    }
+
+    /**
+     * Mask a license key for display, revealing only the last four characters.
+     */
+    private function maskKey(string $key): string
+    {
+        $length = strlen($key);
+
+        if ($length <= 4) {
+            return str_repeat('•', $length);
+        }
+
+        return str_repeat('•', $length - 4).substr($key, -4);
     }
 
     /**

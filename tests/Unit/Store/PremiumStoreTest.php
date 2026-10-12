@@ -85,6 +85,15 @@ class PremiumStoreTest extends TestCase
         $this->assertFalse($this->store->verifyOAuthState('state-abc'), 'State should be consumed on first verify.');
     }
 
+    public function test_any_admin_can_complete_the_sites_oauth_state(): void
+    {
+        WpStub::$currentUserId = 1;
+        $this->store->setOAuthState('state-abc');
+
+        WpStub::$currentUserId = 2;
+        $this->assertTrue($this->store->verifyOAuthState('state-abc'));
+    }
+
     public function test_unknown_state_fails_verification(): void
     {
         $this->assertFalse($this->store->verifyOAuthState('nope'));

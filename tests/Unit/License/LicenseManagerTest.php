@@ -501,6 +501,389 @@ class LicenseManagerTest extends TestCase
         }
     }
 
+    /**
+     * #29: a stored key that no longer decrypts (salts rotated, cipher key lost).
+     */
+    public function test_an_unreadable_key_is_reported_instead_of_failing(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        unset(WpStub::$options['wp_statistics_premium_cipher']); // the key material changes
+        $manager = $this->freshManager();
+        $calls = count(WpStub::$requestLog);
+
+        $data = $manager->getLicenseData();
+
+        $this->assertIsArray($data);
+        $this->assertArrayNotHasKey('license_key_masked', $data);
+        $this->assertArrayNotHasKey('license_key', $data);
+        $this->assertTrue($manager->isActivated(), 'A key is still stored; deactivate() can clear it.');
+        $this->assertNull($manager->getLicenseKey());
+        $this->assertFalse($manager->isValid(), 'A key that cannot be read can neither update nor validate.');
+        $this->assertSame(LicenseErrorCode::KEY_UNREADABLE, $manager->classify()['code']);
+        $this->assertFalse($manager->refreshStatus());
+        $this->assertCount($calls, WpStub::$requestLog);
+    }
+
+    /**
+     * #30: a different key hands the old key's seat on this domain back.
+     */
+    public function test_replace_key_releases_the_old_keys_seat_after_activating(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00'); // KEY-001
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]); // activate
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]); // validate
+        WpStub::queueJson(200, ['success' => true]);                                    // deactivate old
+
+        $result = $this->manager->replaceKey('KEY-002');
+
+        $calls = array_slice(WpStub::$requestLog, -3);
+        $this->assertStringContainsString('/api/v1/license/activate', $calls[0]['url']);
+        $this->assertSame('KEY-002', json_decode($calls[0]['args']['body'], true)['license_key']);
+        $this->assertStringContainsString('/api/v1/license/deactivate', $calls[2]['url']);
+        $this->assertSame('KEY-001', json_decode($calls[2]['args']['body'], true)['license_key']);
+        $this->assertSame('example.com', json_decode($calls[2]['args']['body'], true)['domain']);
+        $this->assertSame(['removed_remotely' => true, 'error_code' => null], $result['released']);
+        $this->assertSame('KEY-002', $this->manager->getLicenseKey());
+        $this->assertStringEndsWith('-002', $result['license']['license_key_masked']);
+    }
+
+    public function test_replace_key_reports_a_seat_it_could_not_hand_back(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        WpStub::queueError('Network down');
+
+        $result = $this->manager->replaceKey('KEY-002');
+
+        $this->assertSame(['removed_remotely' => false, 'error_code' => LicenseErrorCode::NETWORK_ERROR], $result['released']);
+        $this->assertSame('KEY-002', $this->manager->getLicenseKey());
+    }
+
+    public function test_replace_key_with_the_same_key_releases_nothing(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        $calls = count(WpStub::$requestLog);
+
+        $result = $this->manager->replaceKey('KEY-001');
+
+        $this->assertNull($result['released']);
+        $this->assertCount($calls + 2, WpStub::$requestLog, 'Only activate and validate.');
+    }
+
+    /**
+     * #42: Nexus matches keys ignoring case, so the same key in other case is the
+     * same license and its seat (just activated) must not be released.
+     */
+    public function test_replace_key_with_the_same_key_in_other_case_releases_nothing(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00'); // KEY-001
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        $calls = count(WpStub::$requestLog);
+
+        $result = $this->manager->replaceKey(' key-001 ');
+
+        $this->assertNull($result['released']);
+        $this->assertCount($calls + 2, WpStub::$requestLog, 'Only activate and validate, no deactivate.');
+    }
+
+    public function test_replace_key_uses_the_license_id_when_both_are_known(): void
+    {
+        $license = ['status' => 'active', 'license_id' => 77, 'features' => []];
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]);
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]);
+        $this->manager->activate('KEY-001');
+
+        // A different key string Nexus resolves to the same license: nothing to release.
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]);
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]);
+        $this->assertNull($this->manager->replaceKey('KEY-001-ALIAS')['released']);
+
+        // Same key in other case, but Nexus says it is another license: release.
+        $other = ['license_id' => 78] + $license;
+        WpStub::queueJson(200, ['success' => true, 'license' => $other]);
+        WpStub::queueJson(200, ['success' => true, 'license' => $other]);
+        WpStub::queueJson(200, ['success' => true]); // deactivate old
+        $result = $this->manager->replaceKey('key-001-alias');
+
+        $this->assertSame(['removed_remotely' => true, 'error_code' => null], $result['released']);
+    }
+
+    public function test_a_failed_replacement_keeps_the_old_license_and_its_seat(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        WpStub::queueJson(404, ['success' => false, 'error_code' => 'invalid_key', 'message' => 'License not found']);
+        $calls = count(WpStub::$requestLog);
+
+        try {
+            $this->manager->replaceKey('BAD-KEY');
+            $this->fail('A refused key must throw.');
+        } catch (\Exception $e) {
+            $this->assertCount($calls + 1, WpStub::$requestLog, 'No deactivate for the old key.');
+        }
+
+        $this->assertSame('KEY-001', $this->manager->getLicenseKey());
+        $this->assertTrue($this->manager->isValid());
+    }
+
+    /**
+     * #37: on a staging clone, domain_not_allowed is about the address, not the key.
+     */
+    public function test_domain_not_allowed_keeps_the_status_and_marks_this_site_not_activated(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        WpStub::$homeUrl = 'https://staging.example.com';
+        WpStub::queueJson(403, ['success' => false, 'error' => 'domain_not_allowed', 'message' => 'Domain not activated', 'error_code' => 'domain_not_allowed']);
+
+        $this->assertFalse($this->manager->validate());
+
+        $data = $this->manager->getLicenseData();
+        $this->assertSame('active', $data['status']);
+        $this->assertSame('domain_not_allowed', $data['error_code']);
+        $this->assertFalse($data['site']['active']);
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
+        $this->assertFalse($this->manager->isValid(), 'No updates until it is activated here.');
+        $this->assertSame(['was' => 'example.com', 'now' => 'staging.example.com'], $this->manager->domainChange());
+
+        // A domain-less refresh says nothing about this domain, so the state holds.
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        $this->manager->refreshStatus();
+
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
+        $this->assertFalse($this->manager->isValid(), 'No updates until it is activated here.');
+    }
+
+    /**
+     * #42: a staging copy of a one-seat license (1 of 1, the seat is production's)
+     * is not activated here, not over the limit.
+     */
+    public function test_a_staging_copy_of_a_full_one_seat_license_is_not_activated_here(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        $data = $this->store->get('license');
+        $data['max_activations'] = 1;
+        $data['activation_count'] = 1;
+        $this->store->set('license', $data);
+        WpStub::$homeUrl = 'https://staging.example.com';
+        WpStub::queueJson(403, ['error_code' => 'domain_not_allowed', 'message' => 'Domain not activated']);
+
+        $this->manager->validate();
+
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
+        $this->assertFalse($this->manager->isValid());
+    }
+
+    public function test_more_sites_than_seats_is_over_limit_even_when_not_activated_here(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        $data = $this->store->get('license');
+        $data['max_activations'] = 1;
+        $data['activation_count'] = 2;
+        $this->store->set('license', $data);
+        WpStub::queueJson(403, ['error_code' => 'domain_not_allowed', 'message' => 'Domain not activated']);
+
+        $this->manager->validate();
+
+        $this->assertSame(LicenseErrorCode::OVER_LIMIT, $this->manager->classify()['code']);
+    }
+
+    /**
+     * #42: a copy on a second production address (not a staging name) that Nexus
+     * refuses with domain_not_allowed gets no updates either.
+     */
+    public function test_a_copy_on_a_second_production_domain_is_not_valid(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        WpStub::$homeUrl = 'https://another-shop.com';
+        WpStub::queueJson(403, ['success' => false, 'error_code' => 'domain_not_allowed', 'message' => 'Domain not activated']);
+
+        $this->assertFalse($this->manager->validate());
+
+        $this->assertSame('active', $this->manager->getLicenseData()['status']);
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
+        $this->assertFalse($this->manager->isValid(), 'No updates until it is activated on its own address.');
+        $this->assertSame(['was' => 'example.com', 'now' => 'another-shop.com'], $this->manager->domainChange());
+    }
+
+    /**
+     * #42: a veto on the scoped gate holds even when an old shared callback
+     * returns null (its first argument was always null before).
+     */
+    public function test_a_shared_gate_returning_null_cannot_cancel_a_scoped_veto(): void
+    {
+        $this->queueActivationReplies();
+        WpStub::queueJson(200, ['success' => true]); // rollback
+        add_filter('wp_premium_sdk/wp-statistics/activation_gate', static fn () => 'Tier too low.', 10, 3);
+        add_filter('wp_premium_sdk/activation_gate', static fn () => null, 10, 2);
+
+        try {
+            $this->manager->activate('KEY-001');
+            $this->fail('Expected the scoped veto to hold.');
+        } catch (ActivationVetoedException $e) {
+            $this->assertSame('Tier too low.', $e->getMessage());
+        }
+
+        $this->assertNull($this->manager->getLicenseData());
+    }
+
+    public function test_the_shared_gate_starts_from_null_and_can_still_veto(): void
+    {
+        $this->queueActivationReplies();
+        WpStub::queueJson(200, ['success' => true]); // rollback
+        $first = 'unset';
+        add_filter('wp_premium_sdk/wp-statistics/activation_gate', static fn () => 'Scoped says no.', 10, 3);
+        add_filter('wp_premium_sdk/activation_gate', static function ($error) use (&$first) {
+            $first = $error;
+
+            return $error;
+        }, 10, 2);
+
+        try {
+            $this->manager->activate('KEY-001');
+            $this->fail('Expected a veto.');
+        } catch (ActivationVetoedException $e) {
+            $this->assertSame('Scoped says no.', $e->getMessage());
+        }
+
+        $this->assertNull($first, 'The shared gate keeps its old contract: null first.');
+
+        // Shared veto alone also blocks.
+        WpStub::reset();
+        $this->setUp();
+        $this->queueActivationReplies();
+        WpStub::queueJson(200, ['success' => true]); // rollback
+        add_filter('wp_premium_sdk/activation_gate', static fn () => 'Shared says no.', 10, 2);
+
+        $this->expectException(ActivationVetoedException::class);
+        $this->manager->activate('KEY-001');
+    }
+
+    /**
+     * #38: one plugin's gate must not veto another product's activation.
+     */
+    public function test_a_gate_scoped_to_another_product_is_not_asked(): void
+    {
+        $this->queueActivationReplies();
+        add_filter('wp_premium_sdk/wconvert/activation_gate', static fn () => 'Not for this product.', 10, 3);
+
+        $data = $this->manager->activate('KEY-001');
+
+        $this->assertSame('active', $data['status']);
+    }
+
+    public function test_the_products_own_gate_can_veto(): void
+    {
+        $this->queueActivationReplies();
+        WpStub::queueJson(200, ['success' => true]); // rollback
+        $seen = null;
+        add_filter('wp_premium_sdk/wp-statistics/activation_gate', static function ($error, array $licenseData, string $productSlug) use (&$seen) {
+            $seen = $productSlug;
+
+            return 'Tier too low.';
+        }, 10, 3);
+
+        try {
+            $this->manager->activate('KEY-001');
+            $this->fail('Expected the scoped gate to veto.');
+        } catch (ActivationVetoedException $e) {
+            $this->assertSame('Tier too low.', $e->getMessage());
+        }
+
+        $this->assertSame('wp-statistics', $seen);
+        $this->assertNull($this->manager->getLicenseData());
+    }
+
+    public function test_the_shared_gate_is_told_the_product(): void
+    {
+        $this->queueActivationReplies();
+        $seen = null;
+        add_filter('wp_premium_sdk/activation_gate', static function ($error, array $licenseData, string $productSlug) use (&$seen) {
+            $seen = $productSlug;
+
+            return $productSlug === 'wp-statistics' ? $error : 'Not mine.';
+        }, 10, 3);
+
+        $this->manager->activate('KEY-001');
+
+        $this->assertSame('wp-statistics', $seen);
+        $this->assertTrue($this->manager->isValid());
+    }
+
+    /**
+     * #39: a Retry-After from Nexus is waited out, however often the page asks.
+     */
+    public function test_refresh_waits_out_a_retry_after(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        WpStub::queueJson(429, ['message' => 'Too Many Attempts.'], ['retry-after' => '600']);
+        WpStub::queueJson(429, ['message' => 'Too Many Attempts.'], ['retry-after' => '600']);
+        WpStub::queueJson(429, ['message' => 'Too Many Attempts.'], ['retry-after' => '600']);
+        $calls = count(WpStub::$requestLog);
+
+        for ($i = 0; $i < 3; $i++) {
+            $this->assertFalse($this->manager->refreshStatus());
+        }
+
+        $this->assertCount($calls + 1, WpStub::$requestLog, 'One validate request inside the Retry-After window.');
+        $this->assertGreaterThanOrEqual(time() + 595, $this->manager->retryAt());
+        $this->assertTrue($this->manager->isValid(), 'A rate limit says nothing about the license.');
+    }
+
+    public function test_a_wait_that_has_passed_no_longer_holds_refreshes_back(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        $data = $this->store->get('license');
+        $data['retry_at'] = time() - 1;
+        $this->store->set('license', $data);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+
+        $this->assertNull($this->manager->retryAt());
+        $this->assertTrue($this->manager->refreshStatus());
+        $this->assertArrayNotHasKey('retry_at', $this->store->get('license'), 'An answer clears the wait.');
+    }
+
+    public function test_refresh_with_a_minimum_interval_skips_a_recent_check(): void
+    {
+        $this->activateWith('2027-01-01T00:00:00+00:00');
+        $calls = count(WpStub::$requestLog);
+
+        $this->assertFalse($this->manager->refreshStatus(LicenseManager::MIN_REFRESH_INTERVAL));
+        $this->assertCount($calls, WpStub::$requestLog, 'Checked a moment ago by activate().');
+
+        $this->rewindTimestamps(LicenseManager::MIN_REFRESH_INTERVAL);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+
+        $this->assertTrue($this->manager->refreshStatus(LicenseManager::MIN_REFRESH_INTERVAL));
+        $this->assertCount($calls + 1, WpStub::$requestLog);
+    }
+
+    private function queueActivationReplies(): void
+    {
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active', 'tier_slug' => 'growth', 'features' => []]]);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active', 'tier_slug' => 'growth', 'features' => []]]);
+    }
+
+    /**
+     * A new LicenseManager over the same store, as the next request builds it.
+     */
+    private function freshManager(): LicenseManager
+    {
+        $config = new ClientConfig([
+            'product_slug' => 'wp-statistics',
+            'option_key' => 'wp_statistics_premium',
+            'oauth_state_prefix' => 'x_',
+            'oauth_callback_params' => ['code' => 'c', 'state' => 's'],
+            'api_base_url' => 'https://nexus.test',
+            'text_domain' => 'td',
+            'current_version' => '15.0.0',
+        ]);
+
+        return new LicenseManager(new LicenseClient($config, new ApiClient($config)), $this->store, new SodiumEncryptor('wp_statistics_premium_cipher'));
+    }
+
     private function activateWithSites(): void
     {
         $license = ['status' => 'active', 'features' => [], 'activation_count' => 2, 'max_activations' => 3, 'sites' => [

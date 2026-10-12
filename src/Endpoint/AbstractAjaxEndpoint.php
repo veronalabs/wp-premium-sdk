@@ -57,37 +57,54 @@ abstract class AbstractAjaxEndpoint
         try {
             $this->{$handlers[$subAction]}();
         } catch (Throwable $e) {
-            // Forward the specific, machine-readable code from an ApiException so
-            // the client can map it to a translatable message; fall back to the
-            // endpoint's generic code for any other throwable.
-            $code = $e instanceof ApiException || $e instanceof LicenseActionException
-                ? $e->getErrorCode()
-                : $this->getErrorCode();
-            // Pass through a `renewal` block Nexus attaches to the error (e.g. an
-            // expired key still carries the renewal coupon) so the UI can offer
-            // it even though the action failed.
-            $extra = [];
-            if ($e instanceof ApiException) {
-                $renewal = $e->getData()['renewal'] ?? null;
-                if (is_array($renewal)) {
-                    $extra['renewal'] = $renewal;
-                }
-                // How long the server asked us to wait, so the UI can say when to retry.
-                if ($e->getRetryAfter() !== null) {
-                    $extra['retry_after'] = $e->getRetryAfter();
-                }
-            }
-            // A vetoed activation already took a seat on Nexus; say whether it was
-            // handed back so the UI can ask the user to free it when it was not.
-            if ($e instanceof ActivationVetoedException) {
-                $extra['removed_remotely'] = $e->removedRemotely();
-                $extra['rollback_error_code'] = $e->rollbackErrorCode();
-            }
-            if ($e instanceof LicenseActionException) {
-                $extra = array_merge($extra, $e->getExtra());
-            }
-            $this->errorResponse($e->getMessage(), $code, 400, $extra);
+            $this->errorResponse($e->getMessage(), self::errorCodeOf($e, $this->getErrorCode()), 400, self::errorExtra($e));
         }
+    }
+
+    /**
+     * The machine-readable code a failure carries: an ApiException's or
+     * LicenseActionException's own code, so the client can map it to a
+     * translatable message, else `$fallback`.
+     */
+    public static function errorCodeOf(Throwable $e, string $fallback): string
+    {
+        return $e instanceof ApiException || $e instanceof LicenseActionException
+            ? $e->getErrorCode()
+            : $fallback;
+    }
+
+    /**
+     * The extra keys an error response carries for a failure.
+     *
+     * @return array<string, mixed>
+     */
+    public static function errorExtra(Throwable $e): array
+    {
+        // Pass through a `renewal` block Nexus attaches to the error (e.g. an
+        // expired key still carries the renewal coupon) so the UI can offer
+        // it even though the action failed.
+        $extra = [];
+        if ($e instanceof ApiException) {
+            $renewal = $e->getData()['renewal'] ?? null;
+            if (is_array($renewal)) {
+                $extra['renewal'] = $renewal;
+            }
+            // How long the server asked us to wait, so the UI can say when to retry.
+            if ($e->getRetryAfter() !== null) {
+                $extra['retry_after'] = $e->getRetryAfter();
+            }
+        }
+        // A vetoed activation already took a seat on Nexus; say whether it was
+        // handed back so the UI can ask the user to free it when it was not.
+        if ($e instanceof ActivationVetoedException) {
+            $extra['removed_remotely'] = $e->removedRemotely();
+            $extra['rollback_error_code'] = $e->rollbackErrorCode();
+        }
+        if ($e instanceof LicenseActionException) {
+            $extra = array_merge($extra, $e->getExtra());
+        }
+
+        return $extra;
     }
 
     /**
@@ -96,6 +113,15 @@ abstract class AbstractAjaxEndpoint
     protected function requiredCapability(): string
     {
         return 'manage_options';
+    }
+
+    /**
+     * The capability every sub-action needs, for code outside the endpoint that
+     * must apply the same check (e.g. the sign-in return in AccountBootstrap).
+     */
+    final public function capability(): string
+    {
+        return $this->requiredCapability();
     }
 
     /**

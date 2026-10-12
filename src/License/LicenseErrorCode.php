@@ -40,7 +40,8 @@ final class LicenseErrorCode
 
     /**
      * More sites are activated than the license allows (activation_count >
-     * max_activations), or this site is not activated and every seat is taken.
+     * max_activations). A site not activated here with every seat taken is
+     * NOT_ACTIVATED_HERE, not this.
      */
     public const OVER_LIMIT = 'over_limit';
 
@@ -49,6 +50,20 @@ final class LicenseErrorCode
 
     /** Stored status is present but unrecognized — safe catch-all. */
     public const INVALID = 'invalid';
+
+    /**
+     * A key is stored but can no longer be decrypted (the WordPress salts changed,
+     * or the `{option_key}_cipher` fallback key was lost). The host asks for the key
+     * again; nothing that needs the key works until then.
+     */
+    public const KEY_UNREADABLE = 'key_unreadable';
+
+    /**
+     * The license is fine, but Nexus says this site's domain holds no activation on
+     * it (`domain_not_allowed`), e.g. a staging copy cloned from production. The
+     * host offers "Activate here" or "Move license" (see domainChange()).
+     */
+    public const NOT_ACTIVATED_HERE = 'not_activated_here';
 
     // --- ACTION error codes (emitted by Nexus on activate/validate/deactivate) -
 
@@ -100,10 +115,15 @@ final class LicenseErrorCode
     public const ACCOUNT_EXPIRED = 'account_expired';
 
     /**
-     * The account sign-in in progress was started by another WordPress user; this
-     * user gets the normal activation screen instead of their licenses.
+     * No longer sent: the account sign-in belongs to the site, so every admin
+     * sees it. Kept so hosts that map it keep working.
+     *
+     * @deprecated
      */
     public const SIGN_IN_OTHER_USER = 'sign_in_other_user';
+
+    /** The account signed in to has no licenses for this product. */
+    public const NO_LICENSES = 'no_licenses';
 
     /**
      * Network Admin asked to activate more subsites than the license has free seats.
@@ -168,6 +188,8 @@ final class LicenseErrorCode
             self::OVER_LIMIT,
             self::NOT_ACTIVATED,
             self::INVALID,
+            self::KEY_UNREADABLE,
+            self::NOT_ACTIVATED_HERE,
             self::INVALID_KEY,
             self::KEY_DISABLED,
             self::ACTIVATION_LIMIT_REACHED,
@@ -183,6 +205,7 @@ final class LicenseErrorCode
             self::INVALID_RESPONSE,
             self::ACCOUNT_EXPIRED,
             self::SIGN_IN_OTHER_USER,
+            self::NO_LICENSES,
             self::NOT_ENOUGH_SEATS,
             self::KEY_FROM_CONSTANT,
             self::NETWORK_MANAGED,

@@ -27,6 +27,8 @@ class LicenseEndpointsTest extends TestCase
 
     private LicenseEndpoints $endpoints;
 
+    private PremiumStore $store;
+
     protected function setUp(): void
     {
         WpStub::reset();
@@ -43,7 +45,7 @@ class LicenseEndpointsTest extends TestCase
         ]);
 
         $client = new LicenseClient($config, new ApiClient($config));
-        $store = new PremiumStore($config);
+        $store = $this->store = new PremiumStore($config);
         $this->manager = new LicenseManager($client, $store, new SodiumEncryptor('wp_statistics_premium_cipher'));
         $updater = new PluginUpdater($config, $client, $this->manager, 'wp-statistics-premium/wp-statistics-premium.php');
 
@@ -197,6 +199,78 @@ class LicenseEndpointsTest extends TestCase
         $this->assertSame('Tier too low.', $response['data']['message']);
         $this->assertFalse($response['data']['removed_remotely']);
         $this->assertSame(LicenseErrorCode::NETWORK_ERROR, $response['data']['rollback_error_code']);
+    }
+
+    /**
+     * #30: entering another key on the license page hands the old key's seat back.
+     */
+    public function test_activating_another_key_releases_the_old_seat(): void
+    {
+        $this->activate();
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        WpStub::queueJson(200, ['success' => true]);
+
+        $response = $this->call('activate', ['license_key' => 'KEY-002']);
+
+        $this->assertTrue($response['success']);
+        $this->assertSame(['removed_remotely' => true, 'error_code' => null], $response['data']['released']);
+        $last = WpStub::$requestLog[count(WpStub::$requestLog) - 1];
+        $this->assertStringContainsString('/api/v1/license/deactivate', $last['url']);
+        $this->assertSame('KEY-001', json_decode($last['args']['body'], true)['license_key']);
+    }
+
+    /**
+     * #29: get_status answers with key_unreadable rather than a PHP error.
+     */
+    public function test_get_status_reports_an_unreadable_key(): void
+    {
+        $this->activate();
+        $data = $this->store->get('license');
+        $data['license_key'] = 'not-a-ciphertext'; // what a salt rotation leaves behind
+        $this->store->set('license', $data);
+
+        $response = $this->call('get_status');
+
+        $this->assertTrue($response['success']);
+        $this->assertFalse($response['data']['is_valid']);
+        $this->assertSame(LicenseErrorCode::KEY_UNREADABLE, $response['data']['state']['code']);
+        $this->assertArrayNotHasKey('license_key_masked', $response['data']['license']);
+    }
+
+    /**
+     * #39: the license page asks Nexus at most once a minute unless forced.
+     */
+    public function test_get_status_reuses_a_recent_check_unless_forced(): void
+    {
+        $this->activate();
+        $calls = count(WpStub::$requestLog);
+
+        $response = $this->call('get_status');
+
+        $this->assertFalse($response['data']['fresh']);
+        $this->assertNull($response['data']['retry_at']);
+        $this->assertCount($calls, WpStub::$requestLog);
+
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        $response = $this->call('get_status', ['force' => '1']);
+
+        $this->assertTrue($response['data']['fresh']);
+        $this->assertCount($calls + 1, WpStub::$requestLog);
+    }
+
+    public function test_get_status_reports_the_retry_after_wait(): void
+    {
+        $this->activate();
+        WpStub::queueJson(429, ['message' => 'Too Many Attempts.'], ['retry-after' => '600']);
+        $this->call('get_status', ['force' => '1']);
+        $calls = count(WpStub::$requestLog);
+
+        $response = $this->call('get_status', ['force' => '1']);
+
+        $this->assertFalse($response['data']['fresh']);
+        $this->assertGreaterThanOrEqual(time() + 595, $response['data']['retry_at']);
+        $this->assertCount($calls, WpStub::$requestLog, 'Not even a forced check runs inside the wait.');
     }
 
     /**

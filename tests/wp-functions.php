@@ -296,6 +296,13 @@ if (! function_exists('delete_site_transient')) {
     }
 }
 
+if (! function_exists('is_admin')) {
+    function is_admin(): bool
+    {
+        return true;
+    }
+}
+
 if (! function_exists('current_user_can')) {
     function current_user_can(string $capability): bool
     {

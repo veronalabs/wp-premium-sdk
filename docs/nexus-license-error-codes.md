@@ -64,11 +64,12 @@ Produced by the SDK itself; listed here so the contract is complete.
 | `network_error`    | WP HTTP transport failure (`WP_Error`) — server unreachable. |
 | `invalid_response` | The server replied (below 500, not 429), but the body was not valid JSON. |
 | `account_expired`  | The account sign-in expired during the license picker (Nexus answered 401 or `token_expired`). The SDK has already cleared the session; ask the user to sign in again. |
-| `sign_in_other_user` | An account action (`fetch_licenses`, `activate_license`, `logout`) by an admin other than the one who started the sign-in. Show the normal activation screen. |
+| `no_licenses`      | The account signed in to has no licenses for this product. Returned by account `get_status` as `oauth_error_code`. Suggested message: "Your account has no licenses for this product." |
 | `not_enough_seats` | Network Admin `activate_all` / `activate_sites` / `switch_to_network_key` asked for more subsites than free seats; carries `needed` and `left`. |
 | `key_from_constant` | `activate` / `deactivate` refused: the key is set by the wp-config constant the plugin names (`license_key_constant`). Suggested message: "The key is set in wp-config.php. Delete it there to remove it." |
 | `network_managed`  | Refused on a subsite of a network-activated plugin: the network admin manages the key (`activate`, `deactivate`, `remove_site`, `move_license`). Suggested message: "Managed by your network admin." |
 | `domain_unchanged` | `move_license` with nothing to move: the license is already on this site's domain. |
+| `forbidden`        | The current user lacks the capability the action needs: the endpoint's own (`manage_options`, or `manage_network_options` on the network endpoint), or `install_plugins` for license `install_tier_package` and account `remove_site` (so a multisite subsite admin cannot release seats on the customer's other sites). Suggested message: "You do not have permission." |
 | `file_mods_disabled` | `install_tier_package`: WordPress may not change plugin files here (`DISALLOW_FILE_MODS` or the `file_mod_allowed` filter). |
 | `filesystem_credentials_needed` | `install_tier_package`: WordPress needs FTP/SSH details to write plugin files, and wp-config does not hold them. The SDK never shows the credentials form. |
 | `installed_tier_unknown` | `install_tier_package`: the plugin did not set `installed_tier`. |
@@ -91,9 +92,19 @@ decides what the failure means:
 - **Refusal** — any other code: Nexus has answered, so the answer is stored.
   The stored `status` becomes `expired` (`license_expired`), `suspended`
   (`license_suspended`), `revoked`, `disabled` (`key_disabled`) or `invalid`
-  (everything else, e.g. `invalid_key`, `wrong_product`, `domain_not_allowed`),
-  and `error_code` holds the code. When the body carries a `license` block, that
-  is stored instead.
+  (everything else, e.g. `invalid_key`, `wrong_product`), and `error_code`
+  holds the code. When the body carries a `license` block, that is stored
+  instead.
+- **Not this domain** — `domain_not_allowed` (a `validate()` from a domain that
+  holds no activation, e.g. a staging clone) is about the site's address, not
+  the license: the stored `status` stays, `error_code` is set, and `site.active`
+  becomes false, which `classify()` reports as `not_activated_here`. A later
+  domain-less `refreshStatus()` keeps it; activating here (or `move_license`)
+  clears it. `isValid()` is false meanwhile, so the copy gets no updates until
+  it is activated on its own address.
+
+A `rate_limited` failure with a `Retry-After` header stores `retry_at` (at most
+a day away), and `refreshStatus()` makes no call before then, even when forced.
 
 Failed update-manifest fetches are remembered and retried after 1h, 3h, 6h,
 then every 12h at most (or later, if `Retry-After` says so).
@@ -119,18 +130,22 @@ expiry/activation fields.
 | `over_limit`    | `activation_count > max_activations` (`max > 0`) — see below. | Manage activations |
 | `not_activated` | No key stored on this site.                      | Activate |
 | `invalid`       | `status` present but unrecognized (catch-all).   | (generic) |
+| `key_unreadable` | A key is stored but no longer decrypts (salts changed, cipher key lost). `isValid()` is false. | Re-enter the key |
+| `not_activated_here` | The license is fine, but Nexus said this domain holds no activation (`site.active: false`, from `domain_not_allowed`). | Activate here / Move license |
 
 ### Notice precedence (only one notice shows)
 
 Highest → lowest:
 
 ```
-suspended / revoked / disabled  (→ support)
-  > expired                     (→ renew)
-    > over_limit                (→ manage)
-      > expiring_soon           (→ renew now)
-        > not_activated         (→ activate)
-          > active              (none)
+key_unreadable                  (→ re-enter the key)
+  > suspended / revoked / disabled  (→ support)
+    > expired                     (→ renew)
+      > over_limit                (→ manage)
+        > not_activated_here      (→ activate here / move)
+          > expiring_soon         (→ renew now)
+            > not_activated       (→ activate)
+              > active            (none)
 ```
 
 `expired` outranks `over_limit`: renewing is what fixes an expired license, and
@@ -147,7 +162,7 @@ When Nexus sends this site's own seat (`license.site`), that decides instead:
 | `site.is_counted` | `site.active` | over_limit when |
 |---|---|---|
 | `false` | any | never (a development site uses no seat) |
-| `true` / absent | `false` | `activation_count >= max_activations` (no seat free for this site) |
+| `true` / absent | `false` | `activation_count > max_activations` (this site holds no seat, so a full license, e.g. 1 of 1, is `not_activated_here`) |
 | `true` / absent | `true` / absent | `activation_count > max_activations` |
 
 ### Expiry thresholds
