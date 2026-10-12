@@ -27,8 +27,11 @@ use VeronaLabs\WpPremiumSdk\License\LicenseManager;
  * the plugin is activated site by site: another key or another subsite asks Nexus
  * for its own. The `wp_premium_sdk/update_allowed` filter lets the host hold an
  * update back, and a site that is not licensed (or held back) gets its offer
- * withdrawn on the next update-check pass. `plugins_api` answers "View details"
- * from the cached manifest.
+ * withdrawn on the next update-check pass, as is an offer for a version that is
+ * already installed. `plugins_api` answers "View details" for this plugin's slug
+ * itself (from the cached manifest, else the plugin header), so WordPress never
+ * asks wordpress.org about it. The cached manifest is dropped once WordPress
+ * upgrades this plugin.
  */
 class PluginUpdater
 {
@@ -73,6 +76,7 @@ class PluginUpdater
         add_filter('pre_set_site_transient_update_plugins', [$this, 'injectPluginUpdate']);
         add_filter('plugins_api', [$this, 'pluginInformation'], 10, 3);
         add_action('wp_premium_sdk/license_changed', [$this, 'onLicenseChanged'], 10, 1);
+        add_action('upgrader_process_complete', [$this, 'onUpgraderProcessComplete'], 10, 2);
     }
 
     /**
@@ -81,9 +85,10 @@ class PluginUpdater
      * WordPress runs this filter over the transient it already holds before it asks
      * wordpress.org, so an offer made while the license was valid must be taken
      * back here: when this install is not licensed for updates, the host's
-     * `wp_premium_sdk/update_allowed` filter says no, or Nexus says there is no
-     * update, the plugin's row moves from `response` to `no_update`. A failed fetch
-     * leaves the transient as it was.
+     * `wp_premium_sdk/update_allowed` filter says no, Nexus says there is no
+     * update, or the manifest's version is already installed (a manifest cached
+     * before an upgrade), the plugin's row moves from `response` to `no_update`.
+     * A failed fetch leaves the transient as it was.
      *
      * @param  object|false  $transient  The site transient value
      * @return object|false
@@ -107,6 +112,11 @@ class PluginUpdater
         }
 
         if (empty($manifest['update_available']) || empty($manifest['manifest']['plugin'])) {
+            return $this->withdrawUpdate($transient);
+        }
+
+        // The cached answer can predate an upgrade: never offer what is installed.
+        if (version_compare($this->config->currentVersion(), (string) ($manifest['manifest']['version'] ?? ''), '>=')) {
             return $this->withdrawUpdate($transient);
         }
 
@@ -147,9 +157,15 @@ class PluginUpdater
 
     /**
      * Answer `plugins_api('plugin_information')` for this plugin — the "View
-     * version x.y.z details" modal — from the cached manifest, so WordPress does
-     * not ask wordpress.org about the slug. Never fetches: with nothing cached it
-     * returns `$result` untouched and WordPress carries on as before.
+     * details" modal — so WordPress never asks wordpress.org about the slug (the
+     * premium slug is not there, or is someone else's plugin).
+     *
+     * With a manifest cached for the key updates run on, the answer describes the
+     * manifest's version (requirements, changelog) and carries its package as
+     * `download_link` when an update is available, so the modal offers "Install
+     * Update Now". Otherwise (nothing cached, not licensed) it describes the
+     * installed version from the plugin header, without a download link. Never
+     * fetches. `external` keeps the modal from linking to wordpress.org.
      *
      * @param  false|object|array<string, mixed>  $result
      * @param  string  $action
@@ -168,7 +184,7 @@ class PluginUpdater
         $payload = is_array($manifest['manifest'] ?? null) ? $manifest['manifest'] : [];
 
         if (empty($payload['version'])) {
-            return $result;
+            $payload = [];
         }
 
         $header = [];
@@ -181,20 +197,42 @@ class PluginUpdater
 
         if (! empty($payload['changelog'])) {
             $sections['changelog'] = nl2br(esc_html((string) $payload['changelog']));
+        } elseif (! empty($header['Description'])) {
+            $sections['description'] = esc_html((string) $header['Description']);
         }
 
-        return (object) [
+        $version = (string) ($payload['version'] ?? '');
+
+        if ($version === '') {
+            $version = (string) ($header['Version'] ?? '');
+        }
+
+        if ($version === '') {
+            $version = $this->config->currentVersion();
+        }
+
+        $info = [
             'name' => (string) ($header['Name'] ?? $payload['plugin']['name'] ?? $slug),
             'slug' => $slug,
-            'version' => (string) $payload['version'],
+            'version' => $version,
             'author' => (string) ($header['Author'] ?? ''),
             'homepage' => (string) ($header['PluginURI'] ?? ''),
-            'requires' => (string) ($payload['requires'] ?? ''),
-            'requires_php' => (string) ($payload['requires_php'] ?? ''),
+            'requires' => (string) ($payload['requires'] ?? $header['RequiresWP'] ?? ''),
+            'requires_php' => (string) ($payload['requires_php'] ?? $header['RequiresPHP'] ?? ''),
             'tested' => (string) ($payload['tested'] ?? ''),
             'last_updated' => (string) ($payload['released_at'] ?? ''),
             'sections' => $sections,
+            'external' => true,
         ];
+
+        $package = (string) ($payload['plugin']['url'] ?? '');
+
+        if ($package !== '' && ! empty($manifest['update_available'])
+            && version_compare($this->config->currentVersion(), $version, '<')) {
+            $info['download_link'] = $package;
+        }
+
+        return (object) $info;
     }
 
     /**
@@ -205,6 +243,39 @@ class PluginUpdater
     {
         if ($productSlug === $this->config->productSlug()) {
             $this->flush();
+        }
+    }
+
+    /**
+     * Listener for `upgrader_process_complete`: when WordPress has just updated
+     * (or replaced) this plugin, drop the cached manifest, which still describes
+     * the version that was installed before and would offer it again.
+     *
+     * @param  mixed  $upgrader
+     * @param  mixed  $hookExtra
+     */
+    public function onUpgraderProcessComplete($upgrader, $hookExtra = []): void
+    {
+        if (! is_array($hookExtra) || ($hookExtra['type'] ?? '') !== 'plugin') {
+            return;
+        }
+
+        $plugins = (array) ($hookExtra['plugins'] ?? []);
+
+        if (isset($hookExtra['plugin'])) {
+            $plugins[] = $hookExtra['plugin'];
+        }
+
+        $ours = in_array($this->pluginBasename, $plugins, true);
+
+        // "Replace current with uploaded" is an install over the same folder.
+        if (! $ours && ($hookExtra['action'] ?? '') === 'install' && is_object($upgrader)) {
+            $result = $upgrader->result ?? null;
+            $ours = is_array($result) && ($result['destination_name'] ?? '') === dirname($this->pluginBasename);
+        }
+
+        if ($ours) {
+            delete_site_transient($this->cacheKey());
         }
     }
 

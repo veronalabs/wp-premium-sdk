@@ -127,6 +127,39 @@ class PremiumStoreTest extends TestCase
         }
     }
 
+    public function test_this_sites_standing_and_a_refusal_fire(): void
+    {
+        $base = ['status' => 'active', 'activated_at' => 100, 'site' => ['active' => true, 'is_counted' => true]];
+        $this->store->set('license', $base);
+
+        foreach ([
+            ['site' => ['active' => false, 'is_counted' => true]],
+            ['site' => ['active' => true, 'is_counted' => false]],
+            ['error_code' => 'domain_not_allowed'],
+        ] as $change) {
+            WpStub::$actionLog = [];
+            $this->store->set('license', array_merge($base, $change));
+            $this->assertCount(1, WpStub::$actionLog, 'Change: '.json_encode($change));
+            $this->store->set('license', $base);
+        }
+
+        $snapshot = PremiumStore::licenseSnapshot(array_merge($base, ['error_code' => 'domain_not_allowed']));
+        $this->assertSame(['active' => true, 'is_counted' => true], $snapshot['site']);
+        $this->assertSame('domain_not_allowed', $snapshot['error_code']);
+        $this->assertSame(['active' => null, 'is_counted' => null], PremiumStore::licenseSnapshot(['status' => 'active'])['site']);
+    }
+
+    public function test_other_sites_activating_is_silent(): void
+    {
+        $this->store->set('license', ['status' => 'active', 'activated_at' => 100, 'max_activations' => 5, 'activation_count' => 1, 'sites' => [['domain' => 'a.test']]]);
+        WpStub::$actionLog = [];
+
+        $this->store->set('license', ['status' => 'active', 'activated_at' => 100, 'max_activations' => 5, 'activation_count' => 2, 'sites' => [['domain' => 'a.test'], ['domain' => 'b.test']]]);
+
+        $this->assertSame([], WpStub::$actionLog);
+        $this->assertArrayNotHasKey('activation_count', PremiumStore::licenseSnapshot(['status' => 'active']));
+    }
+
     public function test_removing_the_license_fires_with_a_null_new_value(): void
     {
         $this->store->set('license', ['status' => 'active']);

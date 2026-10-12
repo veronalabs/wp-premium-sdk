@@ -26,6 +26,13 @@ class WpStub
     /** Plugin files activated across the whole network. */
     public static array $networkActivatedPlugins = [];
 
+    /**
+     * What `get_plugins()` answers: plugin header data by basename.
+     *
+     * @var array<string, array<string, string>>
+     */
+    public static array $plugins = [];
+
     /** @var array<string, mixed> */
     public static array $transients = [];
 
@@ -135,6 +142,7 @@ class WpStub
         self::$networkHomeUrl = 'https://example.com';
         self::$isMultisite = false;
         self::$networkActivatedPlugins = [];
+        self::$plugins = [];
     }
 
     /**

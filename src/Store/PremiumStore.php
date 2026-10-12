@@ -81,8 +81,12 @@ class PremiumStore
     /**
      * What entitlement depends on in a stored license section, without the key:
      * `license_id` and `activated_at` (a new key or activation), `status`,
-     * `expires_at`, `tier_slug`, `features`, `max_activations` and
-     * `activation_count`. Null when there is no license.
+     * `expires_at`, `tier_slug`, `features`, `max_activations`, this site's
+     * standing (`site.active`, `site.is_counted`; null when Nexus did not say) and
+     * `error_code` (a refusal such as a domain not allowed). Nothing that moves
+     * when other sites activate or leave (`activation_count`, `sites`), so another
+     * site's activation does not flush this site's caches. Null when there is no
+     * license.
      *
      * @param  mixed  $license
      * @return array<string, mixed>|null
@@ -94,6 +98,7 @@ class PremiumStore
         }
 
         $features = array_values(array_filter((array) ($license['features'] ?? []), 'is_string'));
+        $site = is_array($license['site'] ?? null) ? $license['site'] : [];
         sort($features);
 
         return [
@@ -104,8 +109,20 @@ class PremiumStore
             'tier_slug' => (string) ($license['tier_slug'] ?? ''),
             'features' => $features,
             'max_activations' => (int) ($license['max_activations'] ?? 0),
-            'activation_count' => (int) ($license['activation_count'] ?? 0),
+            'site' => [
+                'active' => self::nullableBool($site['active'] ?? null),
+                'is_counted' => self::nullableBool($site['is_counted'] ?? null),
+            ],
+            'error_code' => (string) ($license['error_code'] ?? ''),
         ];
+    }
+
+    /**
+     * @param  mixed  $value
+     */
+    private static function nullableBool($value): ?bool
+    {
+        return $value === null ? null : (bool) $value;
     }
 
     /**

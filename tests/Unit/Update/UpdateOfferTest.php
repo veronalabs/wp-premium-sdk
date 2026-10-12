@@ -10,7 +10,8 @@ use VeronaLabs\WpPremiumSdk\Tests\WpStub;
 
 /**
  * The update offer follows the license (#33), the manifest cache is flushed when
- * the license changes (#34), and "View details" is answered from the manifest (#41).
+ * the license changes (#34), and "View details" is answered from the manifest (#41)
+ * or, without one, from the plugin header, never by wordpress.org.
  */
 class UpdateOfferTest extends TestCase
 {
@@ -162,18 +163,130 @@ class UpdateOfferTest extends TestCase
         $this->assertCount($count, WpStub::$requestLog, 'No request from the modal.');
     }
 
-    public function test_view_details_falls_through_without_a_cached_manifest_or_for_another_slug(): void
+    public function test_view_details_offers_the_package_and_never_links_to_wordpress_org(): void
+    {
+        $this->queueManifest();
+        $this->sdk->pluginUpdater()->fetchManifest();
+
+        $info = $this->details();
+
+        $this->assertTrue($info->external);
+        $this->assertSame('https://nexus.test/p.zip', $info->download_link);
+    }
+
+    public function test_view_details_has_no_download_link_for_the_installed_version(): void
+    {
+        $this->queueManifest('15.0.0');
+        $this->sdk->pluginUpdater()->fetchManifest();
+
+        $info = $this->details();
+
+        $this->assertSame('15.0.0', $info->version);
+        $this->assertTrue($info->external);
+        $this->assertObjectNotHasProperty('download_link', $info);
+    }
+
+    public function test_view_details_answers_from_the_plugin_header_without_a_manifest(): void
+    {
+        WpStub::$plugins[SdkFixture::PLUGIN] = [
+            'Name' => 'WP Statistics Premium',
+            'Version' => '15.0.0',
+            'Author' => 'VeronaLabs',
+            'PluginURI' => 'https://wp-statistics.com',
+            'Description' => 'Premium <add-ons>.',
+            'RequiresWP' => '6.0',
+            'RequiresPHP' => '7.4',
+        ];
+
+        $info = $this->details();
+
+        $this->assertIsObject($info, 'Never falls through to wordpress.org for our own slug.');
+        $this->assertSame('WP Statistics Premium', $info->name);
+        $this->assertSame('15.0.0', $info->version);
+        $this->assertSame('6.0', $info->requires);
+        $this->assertSame('7.4', $info->requires_php);
+        $this->assertSame('https://wp-statistics.com', $info->homepage);
+        $this->assertSame('Premium &lt;add-ons&gt;.', $info->sections['description']);
+        $this->assertTrue($info->external);
+        $this->assertObjectNotHasProperty('download_link', $info);
+        $this->assertSame([], WpStub::$requestLog, 'Nothing cached: no request either.');
+    }
+
+    public function test_view_details_for_an_unlicensed_site_shows_the_installed_version_without_a_package(): void
+    {
+        $this->queueManifest();
+        $this->sdk->pluginUpdater()->fetchManifest();
+
+        WpStub::queueJson(403, ['success' => false, 'error' => 'license_revoked', 'error_code' => 'license_revoked']);
+        $this->sdk->licenseManager()->refreshStatus();
+        $count = count(WpStub::$requestLog);
+
+        $info = $this->details();
+
+        $this->assertIsObject($info);
+        $this->assertSame('15.0.0', $info->version, 'From ClientConfig when the header is not known.');
+        $this->assertObjectNotHasProperty('download_link', $info);
+        $this->assertCount($count, WpStub::$requestLog);
+    }
+
+    public function test_view_details_leaves_other_slugs_and_actions_alone(): void
     {
         $updater = $this->sdk->pluginUpdater();
-
-        $this->assertFalse($updater->pluginInformation(false, 'plugin_information', (object) ['slug' => 'wp-statistics-premium']));
-        $this->assertSame([], WpStub::$requestLog, 'Nothing cached: no request either.');
-
         $this->queueManifest();
         $updater->fetchManifest();
 
         $this->assertFalse($updater->pluginInformation(false, 'plugin_information', (object) ['slug' => 'akismet']));
         $this->assertFalse($updater->pluginInformation(false, 'query_plugins', (object) ['slug' => 'wp-statistics-premium']));
+    }
+
+    public function test_a_cached_manifest_for_the_installed_version_is_not_offered(): void
+    {
+        // Cached before the upgrade to 15.0.0, which is what now runs.
+        $this->queueManifest('15.0.0');
+        $stale = (object) ['response' => [SdkFixture::PLUGIN => (object) ['new_version' => '15.0.0']]];
+
+        $transient = $this->sdk->pluginUpdater()->injectPluginUpdate($stale);
+
+        $this->assertArrayNotHasKey(SdkFixture::PLUGIN, $transient->response);
+        $this->assertArrayHasKey(SdkFixture::PLUGIN, $transient->no_update);
+
+        $this->queueManifest('14.9.0');
+        $this->sdk->pluginUpdater()->flush();
+        $transient = $this->sdk->pluginUpdater()->injectPluginUpdate((object) ['response' => []]);
+        $this->assertArrayNotHasKey(SdkFixture::PLUGIN, $transient->response, 'Older than installed: not offered either.');
+    }
+
+    public function test_upgrading_this_plugin_flushes_the_cached_manifest(): void
+    {
+        $this->sdk->register();
+        $this->queueManifest();
+        $this->sdk->pluginUpdater()->fetchManifest();
+
+        do_action('upgrader_process_complete', null, ['action' => 'update', 'type' => 'plugin', 'bulk' => true, 'plugins' => ['akismet/akismet.php']]);
+        do_action('upgrader_process_complete', null, ['action' => 'update', 'type' => 'theme', 'themes' => [SdkFixture::PLUGIN]]);
+        $this->assertArrayHasKey(self::CACHE, WpStub::$siteTransients, 'Another plugin, or not a plugin: kept.');
+
+        do_action('upgrader_process_complete', null, ['action' => 'update', 'type' => 'plugin', 'bulk' => true, 'plugins' => [SdkFixture::PLUGIN]]);
+        $this->assertArrayNotHasKey(self::CACHE, WpStub::$siteTransients);
+    }
+
+    public function test_replacing_this_plugin_by_upload_flushes_the_cached_manifest(): void
+    {
+        $this->queueManifest();
+        $this->sdk->pluginUpdater()->fetchManifest();
+
+        $upgrader = (object) ['result' => ['destination_name' => 'wp-statistics-premium']];
+        $this->sdk->pluginUpdater()->onUpgraderProcessComplete($upgrader, ['action' => 'install', 'type' => 'plugin']);
+
+        $this->assertArrayNotHasKey(self::CACHE, WpStub::$siteTransients);
+    }
+
+    /**
+     * @return mixed
+     */
+    private function details()
+    {
+        return $this->sdk->pluginUpdater()->pluginInformation(false, 'plugin_information', (object) ['slug' => 'wp-statistics-premium']);
     }
 
     private function activated(string $key): PremiumServiceProvider

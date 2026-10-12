@@ -151,7 +151,7 @@ if (! function_exists('is_plugin_active_for_network')) {
 if (! function_exists('get_plugins')) {
     function get_plugins(): array
     {
-        return [];
+        return WpStub::$plugins;
     }
 }
 

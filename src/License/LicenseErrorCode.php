@@ -145,6 +145,13 @@ final class LicenseErrorCode
     public const INSTALL_FAILED = 'install_failed';
 
     /**
+     * The update manifest answered 401 without a code: almost always a Nexus that
+     * does not read the `X-License-Key` header yet (veronalabs/nexus#1237), so the
+     * request reached it without a key. Updates stop until the store is upgraded.
+     */
+    public const MANIFEST_AUTH_MISSING = 'manifest_auth_missing';
+
+    /**
      * All canonical code values, deduplicated.
      *
      * @return array<int, string>
@@ -186,6 +193,7 @@ final class LicenseErrorCode
             self::LICENSED_TIER_UNKNOWN,
             self::PACKAGE_UNAVAILABLE,
             self::INSTALL_FAILED,
+            self::MANIFEST_AUTH_MISSING,
         ];
     }
 

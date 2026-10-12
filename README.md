@@ -252,9 +252,9 @@ On a network-activated plugin the check is network-wide, like the plugin files a
 
 A failed fetch is remembered too: the next attempt waits 1h, then 3h, 6h and at most 12h while failures continue (longer when the server sends `Retry-After`), so a refused or unreachable site does not ask on every update check.
 
-The manifest request sends the license key in the `X-License-Key` header, never in the URL, so it stays out of access logs (needs a Nexus that reads the header, veronalabs/nexus#1236).
+The manifest request sends the license key in the `X-License-Key` header, never in the URL, so it stays out of access logs. **Every Nexus store this SDK talks to (including the separate SlimStat store) must run veronalabs/nexus#1237 before a plugin ships this SDK.** An older Nexus never sees the key and answers 401; the SDK reports that 401 (when it carries no code) as `manifest_auth_missing` instead of `unknown`, records it in the failure backoff, and does not fall back to putting the key in the URL.
 
-The update offer follows the license. When the license stops being valid (expired, revoked, deactivated), when Nexus reports no update, or when the host says no through the `wp_premium_sdk/update_allowed` filter, the next update-check pass moves the plugin from the transient's `response` to `no_update`, so an offer made earlier is withdrawn. A failed fetch leaves the transient as it was.
+The update offer follows the license. When the license stops being valid (expired, revoked, deactivated), when Nexus reports no update, when the manifest's version is not newer than the installed one, or when the host says no through the `wp_premium_sdk/update_allowed` filter, the next update-check pass moves the plugin from the transient's `response` to `no_update`, so an offer made earlier is withdrawn. A failed fetch leaves the transient as it was. When WordPress updates this plugin (or replaces it by upload), `upgrader_process_complete` drops the cached manifest, so the version just installed is not offered again.
 
 ```php
 // Hold an update back on the host's own terms.
@@ -267,7 +267,7 @@ The cached manifest belongs to the key that fetched it: after a key change the n
 
 Whenever the stored license changes on anything entitlement depends on, the `wp_premium_sdk/license_changed` action fires and the updater flushes its cache and backoff (see [`PremiumStore`](#premiumstore)).
 
-"View details" for the update (`plugins_api`, `plugin_information`) is answered from the cached manifest: `version`, `requires`, `requires_php`, `tested`, `released_at` and `changelog` (escaped, line breaks kept); name, author and homepage come from the plugin header. With nothing cached it returns the result untouched and never makes a request.
+"View details" (`plugins_api`, `plugin_information`) for this plugin's slug is always answered by the SDK, never by wordpress.org, and never makes a request. With a manifest cached for the current key it shows the manifest's `version`, `requires`, `requires_php`, `tested`, `released_at` and `changelog` (escaped, line breaks kept), plus `download_link` (the package URL) when an update is available, so the modal shows "Install Update Now". Without one (nothing cached, or the site is not licensed) it describes the installed version from the plugin header, with no download link. Name, author and homepage always come from the plugin header, and the answer carries `external: true`, so the modal does not link to wordpress.org.
 
 `fetchManifest()` returns the Nexus response verbatim:
 
@@ -349,11 +349,12 @@ Every write of the license section goes through the store, whichever path makes 
 add_action('wp_premium_sdk/license_changed', function (string $productSlug, ?array $old, ?array $new): void {
     // $old / $new: null when there was / is no license, else
     // ['license_id', 'activated_at', 'status', 'expires_at', 'tier_slug',
-    //  'features', 'max_activations', 'activation_count'] — never the key.
+    //  'features', 'max_activations',
+    //  'site' => ['active' => ?bool, 'is_counted' => ?bool], 'error_code'] — never the key.
 }, 10, 3);
 ```
 
-A refresh that changes none of those (only `last_validated_at` moves, say) stays silent. The SDK's own updater listens and flushes its manifest cache and backoff.
+A refresh that changes none of those (only `last_validated_at` moves, say) stays silent. A domain refusal (`site.active` turning false, or a new `error_code`) fires. Counts that move when other sites activate or leave (`activation_count`, `sites`) are left out on purpose, so another site's activation does not flush this site's caches. The SDK's own updater listens and flushes its manifest cache and backoff.
 
 ---
 
@@ -560,10 +561,10 @@ The SDK ships with a thin WordPress function stub layer (`tests/WpStub.php`) so 
 - `SodiumEncryptor` — round-trip, ciphertext uniqueness, tamper detection, fallback key persistence.
 - `PremiumStore` — section isolation, one-time OAuth state, clear semantics.
 - `ApiClient` — URL building, query string, JSON body, error mapping, local-TLD SSL bypass.
-- `LicenseClient` — activate payload shape, manifest endpoint URL + bearer header + optional `current_version`.
+- `LicenseClient` — activate payload shape, manifest endpoint URL + `X-License-Key` / bearer header + optional `current_version`, a code-less manifest 401 reported as `manifest_auth_missing`.
 - `LicenseManager` — classify precedence, refusal vs. transient failures, deactivate results, site list, stored details.
 - `LicenseEndpoints` / `AccountEndpoints` — AJAX sub-actions through `dispatch()`.
-- `PluginUpdater` — manifest failure backoff; update offer withdrawn when unlicensed or held back, per-key and per-subsite cache, flush on `license_changed`, `plugins_api` details.
+- `PluginUpdater` — manifest failure backoff; update offer withdrawn when unlicensed, held back or not newer than installed, per-key and per-subsite cache, flush on `license_changed` and `upgrader_process_complete`, `plugins_api` details (manifest or plugin header, `external`, `download_link`).
 - `PremiumServiceProvider::uninstall()`.
 
 Add your own tests under `tests/Unit/<area>/` — queue fake HTTP responses with `WpStub::queueJson()` / `WpStub::queueError()` between calls.

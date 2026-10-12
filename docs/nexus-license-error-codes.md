@@ -75,6 +75,7 @@ Produced by the SDK itself; listed here so the contract is complete.
 | `licensed_tier_unknown` | `install_tier_package`: the manifest names no `tier_slug` (a Nexus older than that field). |
 | `package_unavailable` | `install_tier_package`: the manifest carried no package URL. |
 | `install_failed`   | `install_tier_package`: WordPress's upgrader failed; the message says why. |
+| `manifest_auth_missing` | The update manifest answered 401 without a code (or with an unreadable body). The SDK sends the key only in the `X-License-Key` header, so this almost always means the store runs a Nexus without veronalabs/nexus#1237 and never saw the key. Updates stop until the store is upgraded; recorded in the manifest failure backoff like any failure. |
 
 The HTTP status rides on the exception too (`ApiException::getHttpStatus()`,
 0 when there was no answer).

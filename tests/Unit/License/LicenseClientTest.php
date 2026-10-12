@@ -69,6 +69,33 @@ class LicenseClientTest extends TestCase
         $this->assertStringNotContainsString('KEY-001', WpStub::$requestLog[0]['url']);
     }
 
+    public function test_a_manifest_401_without_a_code_is_manifest_auth_missing(): void
+    {
+        // A Nexus without veronalabs/nexus#1237 never sees the header key.
+        WpStub::queueJson(401, ['success' => false, 'error' => 'A license key is required.']);
+
+        try {
+            $this->client->fetchManifest('KEY-001', '7.9.0');
+            $this->fail('Expected an ApiException.');
+        } catch (\VeronaLabs\WpPremiumSdk\Http\ApiException $e) {
+            $this->assertSame('manifest_auth_missing', $e->getErrorCode());
+            $this->assertSame(401, $e->getHttpStatus());
+            $this->assertFalse($e->isTransient());
+        }
+    }
+
+    public function test_a_manifest_401_with_a_code_keeps_it(): void
+    {
+        WpStub::queueJson(401, ['success' => false, 'error_code' => 'invalid_key']);
+
+        try {
+            $this->client->fetchManifest('KEY-001', '7.9.0');
+            $this->fail('Expected an ApiException.');
+        } catch (\VeronaLabs\WpPremiumSdk\Http\ApiException $e) {
+            $this->assertSame('invalid_key', $e->getErrorCode());
+        }
+    }
+
     public function test_fetch_manifest_with_token_sends_bearer_header(): void
     {
         WpStub::queueJson(200, ['success' => true, 'update_available' => false]);
