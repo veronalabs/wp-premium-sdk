@@ -115,10 +115,15 @@ final class LicenseErrorCode
     public const ACCOUNT_EXPIRED = 'account_expired';
 
     /**
-     * The account sign-in in progress was started by another WordPress user; this
-     * user gets the normal activation screen instead of their licenses.
+     * No longer sent: the account sign-in belongs to the site, so every admin
+     * sees it. Kept so hosts that map it keep working.
+     *
+     * @deprecated
      */
     public const SIGN_IN_OTHER_USER = 'sign_in_other_user';
+
+    /** The account signed in to has no licenses for this product. */
+    public const NO_LICENSES = 'no_licenses';
 
     /**
      * Network Admin asked to activate more subsites than the license has free seats.
@@ -193,6 +198,7 @@ final class LicenseErrorCode
             self::INVALID_RESPONSE,
             self::ACCOUNT_EXPIRED,
             self::SIGN_IN_OTHER_USER,
+            self::NO_LICENSES,
             self::NOT_ENOUGH_SEATS,
             self::KEY_FROM_CONSTANT,
             self::NETWORK_MANAGED,

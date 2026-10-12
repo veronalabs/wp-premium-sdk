@@ -34,7 +34,10 @@ class AccountBootstrap
 
     public function handleOAuthCallback(): void
     {
-        if (! is_admin()) {
+        // admin_init also fires for logged-out requests to admin-ajax.php and
+        // admin-post.php: only a user who may use the account endpoints gets here
+        // (the endpoints' own capability, so the two checks never drift apart).
+        if (! is_admin() || ! current_user_can($this->endpoints->capability())) {
             return;
         }
 
@@ -52,7 +55,7 @@ class AccountBootstrap
         try {
             $this->manager->handleOAuthCallback($code, $state, $this->licenseManager);
         } catch (Exception $e) {
-            $this->manager->setFlashError($e->getMessage());
+            $this->manager->setFlashErrorFrom($e);
         }
 
         // Prefer the explicit return URL passed via wps_return (rawurlencoded
