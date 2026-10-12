@@ -232,8 +232,13 @@ class LicenseClassifyTest extends TestCase
     {
         $full = ['status' => 'active', 'expires_at' => $this->inDays(30), 'max_activations' => 3, 'activation_count' => 3];
 
-        // Not activated here and every seat taken: no room for this site.
+        // Not activated here and every seat taken: this site holds no seat, so it
+        // is not over the limit; it is not activated here.
         $this->seed($full + ['site' => ['active' => false, 'is_counted' => true]]);
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
+
+        // Not activated here, and the other sites alone are more than the seats.
+        $this->seed(['activation_count' => 4] + $full + ['site' => ['active' => false, 'is_counted' => true]]);
         $this->assertSame(LicenseErrorCode::OVER_LIMIT, $this->manager->classify()['code']);
 
         // Activated here and one of the three: fine.

@@ -40,7 +40,8 @@ final class LicenseErrorCode
 
     /**
      * More sites are activated than the license allows (activation_count >
-     * max_activations), or this site is not activated and every seat is taken.
+     * max_activations). A site not activated here with every seat taken is
+     * NOT_ACTIVATED_HERE, not this.
      */
     public const OVER_LIMIT = 'over_limit';
 

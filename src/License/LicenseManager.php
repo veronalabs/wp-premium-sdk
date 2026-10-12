@@ -95,11 +95,15 @@ class LicenseManager
         //
         // Every plugin built on the SDK shares a site, so the gate is scoped to the
         // product: `wp_premium_sdk/{product_slug}/activation_gate`. The shared
-        // `wp_premium_sdk/activation_gate` still runs after it, now told the product
-        // slug as a third argument; it is deprecated and goes in a later release.
+        // `wp_premium_sdk/activation_gate` still runs, now told the product slug as
+        // a third argument; it is deprecated and goes in a later release. Each runs
+        // on its own with null as the first argument (the shared one's old
+        // contract), so an old shared callback that returns null cannot cancel a
+        // scoped veto: a veto from either one wins, the scoped error first.
         $productSlug = $this->client->productSlug();
-        $gateError = apply_filters('wp_premium_sdk/'.$productSlug.'/activation_gate', null, $licenseData, $productSlug);
-        $gateError = apply_filters('wp_premium_sdk/activation_gate', $gateError, $licenseData, $productSlug);
+        $scopedError = apply_filters('wp_premium_sdk/'.$productSlug.'/activation_gate', null, $licenseData, $productSlug);
+        $sharedError = apply_filters('wp_premium_sdk/activation_gate', null, $licenseData, $productSlug);
+        $gateError = is_string($scopedError) && $scopedError !== '' ? $scopedError : $sharedError;
         if (is_string($gateError) && $gateError !== '') {
             $rollback = $this->releaseSeat($licenseKey, $domain);
 
@@ -122,7 +126,8 @@ class LicenseManager
      * was.
      *
      * `released` is null when there was nothing to release (no key stored, the same
-     * key, or a stored key that can no longer be read), else whether Nexus took the
+     * license — same `license_id`, or the same key in any case, as Nexus matches
+     * keys — or a stored key that can no longer be read), else whether Nexus took the
      * old seat back and, if not, why — so the host can say the seat is still taken.
      *
      * @throws Exception
@@ -132,16 +137,36 @@ class LicenseManager
     public function replaceKey(string $licenseKey, string $source = KeySource::MANUAL): array
     {
         $previousKey = $this->getLicenseKey();
+        $previous = $this->store->get('license');
+        $previousId = is_array($previous) ? ($previous['license_id'] ?? null) : null;
 
         $license = $this->activate($licenseKey, $source);
 
         $released = null;
 
-        if ($previousKey !== null && $previousKey !== $licenseKey) {
+        if ($previousKey !== null && ! $this->isSameLicense($previousKey, $previousId, $licenseKey, $license['license_id'] ?? null)) {
             $released = $this->releaseSeat($previousKey, Request::currentDomain());
         }
 
         return ['license' => $license, 'released' => $released];
+    }
+
+    /**
+     * Whether two keys are the same license. Nexus matches keys without regard to
+     * case, so `abcd-1234` and `ABCD-1234` are one license and releasing the "old"
+     * one would release the seat just activated. The license id decides when both
+     * are known; otherwise the keys are compared trimmed and case-insensitively.
+     *
+     * @param  mixed  $oldId
+     * @param  mixed  $newId
+     */
+    private function isSameLicense(string $oldKey, $oldId, string $newKey, $newId): bool
+    {
+        if ($oldId !== null && $oldId !== '' && $newId !== null && $newId !== '') {
+            return (string) $oldId === (string) $newId;
+        }
+
+        return strcasecmp(trim($oldKey), trim($newKey)) === 0;
     }
 
     /**
@@ -438,7 +463,8 @@ class LicenseManager
      * seats paid for, this site among them, is not over the limit. When Nexus
      * reports this site's own seat (`site.is_counted` / `site.active`), that wins:
      * a site that uses no seat is never over the limit, and a site without an
-     * activation is over it as soon as every seat is taken.
+     * activation here (`site.active` false) is `not_activated_here` even when every
+     * seat is taken; only more activations than seats is over the limit there.
      *
      * `days_remaining` is ceil((expires_at - now) / day): null when there is no
      * expiry, <= 0 once expired, otherwise the whole days left.
@@ -560,9 +586,11 @@ class LicenseManager
             return false;
         }
 
-        // Not activated here: there is room only while a seat is still free.
+        // Not activated here: this site is not one of the counted ones, so a full
+        // license (1 of 1) is not over its limit from here — classify() says
+        // not_activated_here. Only more sites than seats is.
         if (array_key_exists('active', $site) && $site['active'] === false) {
-            return $activationCount >= $maxActivations;
+            return $activationCount > $maxActivations;
         }
 
         // Activated here (or Nexus did not say): this site is one of the counted ones.

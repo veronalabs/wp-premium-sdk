@@ -61,11 +61,14 @@ All notable changes to this package are documented here. The format follows
 - Activating a different key on the license page, in the account picker or through a single-license sign-in releases the old key's seat on this domain, instead of leaving it taken on Nexus. (#30)
 - `validate()` from a domain without an activation (a staging clone) no longer stores `domain_not_allowed` as an `invalid` license that the next `refreshStatus()` flips back to `active`: the status stays, `site.active` becomes false and `classify()` says `not_activated_here`. `isValid()` is false for a license with `site.active` false, so such a copy gets no updates until it is activated on its own address. (#37)
 - One plugin's activation gate can no longer veto another product's activation: gates go on the product-scoped filter, and the shared one is told the product slug. (#38)
+- The shared activation gate no longer receives the scoped gate's result, so an old shared callback that returns null cannot cancel a scoped veto; a veto from either filter blocks the activation. (#42)
+- `replaceKey()` treats the same license as the same: it compares `license_id` when both are known, else the keys trimmed and ignoring case (as Nexus does), so re-entering the current key in other case no longer releases this site's seat right after activating it. (#42)
+- `classify()` on a site Nexus says holds no activation (`site.active` false, e.g. a staging copy refused with `domain_not_allowed`) returns `not_activated_here` when the license is full (1 of 1), not `over_limit`; `over_limit` there needs more activations than seats. (#42)
 
 ### Deprecated
 
 - `Request::useNetworkLicenceFor()` does nothing and will be removed in a later release. (#7)
-- The shared `wp_premium_sdk/activation_gate` filter. It still runs (after the scoped one, with the product slug as a third argument) and will be removed in a later release; use `wp_premium_sdk/{product_slug}/activation_gate`. (#38)
+- The shared `wp_premium_sdk/activation_gate` filter. It still runs (on its own, starting from null, with the product slug as a third argument) and will be removed in a later release; use `wp_premium_sdk/{product_slug}/activation_gate`. (#38)
 
 ### Removed
 

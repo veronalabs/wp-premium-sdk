@@ -206,7 +206,7 @@ Keys are encrypted via the injected `EncryptorInterface` before storage and decr
 
 A failed check keeps the cached license only when the failure says nothing about the license (network down, server error, unreadable reply, rate limited). When Nexus refuses the key — expired, suspended, revoked, disabled, invalid, wrong product — the refusal is stored and `isValid()` stops passing. See [docs/nexus-license-error-codes.md](docs/nexus-license-error-codes.md).
 
-`replaceKey()` is how a key is changed: it activates the new key first and, only once that worked, releases the old key's seat on this domain. `released` is null when there was nothing to release (no key, the same key, or a key that can no longer be read). The license page's `activate`, the account picker's `activate_license` and the single-license sign-in all use it, so changing keys no longer leaves the old key's seat taken. A failed or vetoed activation throws and leaves the old license as it was.
+`replaceKey()` is how a key is changed: it activates the new key first and, only once that worked, releases the old key's seat on this domain. `released` is null when there was nothing to release (no key, the same license, or a key that can no longer be read). The same license means the same `license_id` when both are known, else the same key ignoring case and surrounding spaces, as Nexus matches keys, so re-entering the current key in other case does not release this site's seat. The license page's `activate`, the account picker's `activate_license` and the single-license sign-in all use it, so changing keys no longer leaves the old key's seat taken. A failed or vetoed activation throws and leaves the old license as it was.
 
 The `wp_premium_sdk/{product_slug}/activation_gate` filter can veto an activation of this product by returning an error string. The SDK then hands the seat back and throws `ActivationVetoedException` (a `RuntimeException`) whose `removedRemotely()` / `rollbackErrorCode()` say whether that worked.
 
@@ -216,7 +216,7 @@ add_filter('wp_premium_sdk/wp-statistics/activation_gate', function ($error, arr
 }, 10, 3);
 ```
 
-The shared `wp_premium_sdk/activation_gate` filter still runs after the scoped one, for every product on the site, and now gets the product slug as a third argument. It is deprecated: a gate on it also sees other plugins' activations, so it must check the slug. Move to the scoped name; the shared one will be removed in a later release.
+The shared `wp_premium_sdk/activation_gate` filter still runs for every product on the site, and now gets the product slug as a third argument. Each filter starts from null on its own, and a veto from either one blocks the activation, so a shared callback that returns `$error` unchanged cannot cancel a scoped veto. It is deprecated: a gate on it also sees other plugins' activations, so it must check the slug. Move to the scoped name; the shared one will be removed in a later release.
 
 `refreshStatus()` keeps the cached license when a check fails for reasons that say nothing about it. When Nexus rate limits it with a `Retry-After`, the wait (at most a day) is stored as `retry_at` and no check is made before then, forced or not; `retryAt()` reports it. Passing a minimum interval skips the call when the last check was more recent than that; `get_status` passes `LicenseManager::MIN_REFRESH_INTERVAL` (60 seconds).
 

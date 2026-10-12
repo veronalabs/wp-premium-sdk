@@ -160,7 +160,7 @@ When Nexus sends this site's own seat (`license.site`), that decides instead:
 | `site.is_counted` | `site.active` | over_limit when |
 |---|---|---|
 | `false` | any | never (a development site uses no seat) |
-| `true` / absent | `false` | `activation_count >= max_activations` (no seat free for this site) |
+| `true` / absent | `false` | `activation_count > max_activations` (this site holds no seat, so a full license, e.g. 1 of 1, is `not_activated_here`) |
 | `true` / absent | `true` / absent | `activation_count > max_activations` |
 
 ### Expiry thresholds
