@@ -328,6 +328,20 @@ class AccountSignInTest extends TestCase
         $this->assertSame('11', $choice[0]['id']);
     }
 
+    public function test_a_pending_choice_stored_with_keys_is_rewritten_without_them(): void
+    {
+        $this->store->set('account', ['access_token' => 'enc', 'expires_at' => time() + 60, 'pending_choice' => [['id' => 11, 'key' => 'KEY-SECRET-1'], ['id' => 12, 'license_key' => 'KEY-SECRET-2']]]);
+
+        $this->assertTrue($this->account->isConnected(), 'Any read of the session cleans the row.');
+
+        $row = (string) wp_json_encode(WpStub::$options['wp_statistics_premium']);
+        $this->assertStringNotContainsString('KEY-SECRET', $row);
+        $stored = $this->store->get('account')['pending_choice'];
+        $this->assertSame(['11', '12'], array_column($stored, 'id'));
+        $this->assertSame('••••••••ET-1', $stored[0]['license_key_masked']);
+        $this->assertSame('enc', $this->store->get('account')['access_token'], 'The rest of the session is kept.');
+    }
+
     public function test_picking_by_license_id_activates_the_key_looked_up_on_the_server(): void
     {
         $this->signIn([], [['id' => 11, 'key' => 'KEY-1'], ['id' => 12, 'key' => 'KEY-2']]);
@@ -399,6 +413,27 @@ class AccountSignInTest extends TestCase
 
         $this->assertSame('this_site', $response['data']['code']);
         $this->assertCount($requests, WpStub::$requestLog);
+    }
+
+    public function test_an_admin_who_cannot_install_plugins_cannot_remove_a_site(): void
+    {
+        $this->signIn([], [['id' => 11, 'key' => 'KEY-1'], ['id' => 12, 'key' => 'KEY-2']]);
+        WpStub::$currentUserId = 2;
+        WpStub::$deniedCapabilities = [AccountEndpoints::REMOVE_SITE_CAPABILITY];
+        $requests = count(WpStub::$requestLog);
+
+        $response = $this->call('remove_site', ['license_id' => '11', 'domain' => 'old.example']);
+
+        $this->assertFalse($response['success']);
+        $this->assertSame('forbidden', $response['data']['code']);
+        $this->assertCount($requests, WpStub::$requestLog, 'Nothing is sent to Nexus.');
+        $this->assertTrue($this->account->isConnected(), 'The sign-in stays for the other actions.');
+        $this->assertCount(2, $this->call('get_status')['data']['pending_choice'], 'The same admin still sees the sign-in.');
+    }
+
+    public function test_the_sign_in_return_uses_the_account_endpoints_capability(): void
+    {
+        $this->assertSame('manage_options', $this->endpoints->capability());
     }
 
     public function test_a_refused_removal_reports_the_servers_code(): void

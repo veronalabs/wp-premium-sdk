@@ -317,8 +317,8 @@ class AccountManager
             return null;
         }
 
-        // A choice stored before keys were left out still never hands one out.
-        return $this->publicLicenses($choice);
+        // session() has already rewritten a choice stored with keys.
+        return $choice;
     }
 
     /**
@@ -468,7 +468,30 @@ class AccountManager
             return null;
         }
 
+        // A pending choice stored before keys were left out: rewrite the row
+        // without them, so the keys do not sit in wp_options until the sign-in ends.
+        if (is_array($session) && is_array($session['pending_choice'] ?? null) && $this->holdsKeys($session['pending_choice'])) {
+            $session['pending_choice'] = $this->publicLicenses($session['pending_choice']);
+            $this->store->set('account', $session);
+        }
+
         return $session;
+    }
+
+    /**
+     * Whether any license in the list still carries its `key` or `license_key`.
+     *
+     * @param  array<int, mixed>  $licenses
+     */
+    private function holdsKeys(array $licenses): bool
+    {
+        foreach ($licenses as $license) {
+            if (is_array($license) && (array_key_exists('key', $license) || array_key_exists('license_key', $license))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

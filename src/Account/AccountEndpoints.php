@@ -131,13 +131,31 @@ class AccountEndpoints extends AbstractAjaxEndpoint
     }
 
     /**
+     * The capability remove_site needs on top of the endpoint's own. The sign-in
+     * belongs to the site, so any admin can use it; releasing a seat touches the
+     * customer's other sites, so it is kept to admins who may also install plugins
+     * (single-site admins can, multisite subsite admins cannot).
+     */
+    public const REMOVE_SITE_CAPABILITY = 'install_plugins';
+
+    /**
      * Free a seat for this site: release `domain` from the signed-in user's license
      * `license_id`, then return the account's licenses again. This site is refused.
+     * Needs REMOVE_SITE_CAPABILITY; without it the answer is `forbidden`.
      *
      * @throws Exception
      */
     protected function removeSite(): void
     {
+        if (! current_user_can(self::REMOVE_SITE_CAPABILITY)) {
+            $this->errorResponse(
+                __('You do not have permission to remove sites from this license.', $this->config->textDomain()),
+                'forbidden'
+            );
+
+            return;
+        }
+
         $licenseId = (string) Request::get('license_id', '');
         $domain = (string) Request::get('domain', '');
 

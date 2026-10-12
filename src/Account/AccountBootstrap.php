@@ -35,8 +35,9 @@ class AccountBootstrap
     public function handleOAuthCallback(): void
     {
         // admin_init also fires for logged-out requests to admin-ajax.php and
-        // admin-post.php: only a user who may use the account endpoints gets here.
-        if (! is_admin() || ! current_user_can('manage_options')) {
+        // admin-post.php: only a user who may use the account endpoints gets here
+        // (the endpoints' own capability, so the two checks never drift apart).
+        if (! is_admin() || ! current_user_can($this->endpoints->capability())) {
             return;
         }
 

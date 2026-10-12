@@ -116,6 +116,15 @@ abstract class AbstractAjaxEndpoint
     }
 
     /**
+     * The capability every sub-action needs, for code outside the endpoint that
+     * must apply the same check (e.g. the sign-in return in AccountBootstrap).
+     */
+    final public function capability(): string
+    {
+        return $this->requiredCapability();
+    }
+
+    /**
      * Last slug of the ajax hook, e.g. "license" → wp_ajax_{prefix}_license.
      */
     abstract protected function getActionName(): string;
