@@ -63,6 +63,7 @@ After `register()`:
 
 - `wp_ajax_{prefix}_license` and `wp_ajax_{prefix}_account` AJAX actions are live.
 - `pre_set_site_transient_update_plugins` is filtered, so Nexus updates surface in **Dashboard → Updates**.
+- `plugins_api` is filtered, so "View version x.y.z details" shows the premium build's changelog and requirements from the cached manifest.
 - OAuth callback query params (e.g. `?wps_oauth_code=...&wps_oauth_state=...`) are auto-detected on admin page loads.
 - Any module under `pro/modules/<slug>/` with a valid `manifest.json` is booted on `init` — only if the current license grants that slug as a feature.
 
@@ -251,6 +252,23 @@ On a network-activated plugin the check is network-wide, like the plugin files a
 
 A failed fetch is remembered too: the next attempt waits 1h, then 3h, 6h and at most 12h while failures continue (longer when the server sends `Retry-After`), so a refused or unreachable site does not ask on every update check.
 
+The manifest request sends the license key in the `X-License-Key` header, never in the URL, so it stays out of access logs (needs a Nexus that reads the header, veronalabs/nexus#1236).
+
+The update offer follows the license. When the license stops being valid (expired, revoked, deactivated), when Nexus reports no update, or when the host says no through the `wp_premium_sdk/update_allowed` filter, the next update-check pass moves the plugin from the transient's `response` to `no_update`, so an offer made earlier is withdrawn. A failed fetch leaves the transient as it was.
+
+```php
+// Hold an update back on the host's own terms.
+add_filter('wp_premium_sdk/update_allowed', function (bool $allowed, string $productSlug, array $manifest): bool {
+    return $productSlug === 'wp-statistics' ? my_site_is_entitled() : $allowed;
+}, 10, 3);
+```
+
+The cached manifest belongs to the key that fetched it: after a key change the next check asks Nexus again. On a multisite where the plugin is activated site by site, each subsite has its own cache entry.
+
+Whenever the stored license changes on anything entitlement depends on, the `wp_premium_sdk/license_changed` action fires and the updater flushes its cache and backoff (see [`PremiumStore`](#premiumstore)).
+
+"View details" for the update (`plugins_api`, `plugin_information`) is answered from the cached manifest: `version`, `requires`, `requires_php`, `tested`, `released_at` and `changelog` (escaped, line breaks kept); name, author and homepage come from the plugin header. With nothing cached it returns the result untouched and never makes a request.
+
 `fetchManifest()` returns the Nexus response verbatim:
 
 ```php
@@ -324,6 +342,18 @@ $store->clear();                    // wipes everything
 $store->setOAuthState('random');    // 10-min CSRF transient
 $store->verifyOAuthState('random'); // one-time consume
 ```
+
+Every write of the license section goes through the store, whichever path makes it (license page, `get_status` refresh, wp-config or network key, account sign-in, network `activate_all`, uninstall). When the write changes anything entitlement depends on, the store fires:
+
+```php
+add_action('wp_premium_sdk/license_changed', function (string $productSlug, ?array $old, ?array $new): void {
+    // $old / $new: null when there was / is no license, else
+    // ['license_id', 'activated_at', 'status', 'expires_at', 'tier_slug',
+    //  'features', 'max_activations', 'activation_count'] — never the key.
+}, 10, 3);
+```
+
+A refresh that changes none of those (only `last_validated_at` moves, say) stays silent. The SDK's own updater listens and flushes its manifest cache and backoff.
 
 ---
 
@@ -509,7 +539,7 @@ OAuth CSRF state tokens are short-lived transients keyed by `{oauth_state_prefix
 
 A network-activated plugin also keeps the network key in the site option `{option_key}_network` (`['license_key' => '<ciphertext>', 'updated_at' => int]`) and the ids of subsites created since in `{option_key}_network_new_sites`.
 
-Manifest responses are cached in a site transient keyed by `wp_premium_sdk_manifest_{product_slug}` (12-hour TTL); failed fetches are tracked in `wp_premium_sdk_manifest_{product_slug}_failure`.
+Manifest responses are cached in a site transient keyed by `wp_premium_sdk_manifest_{product_slug}` (12-hour TTL), with `_{blog_id}` appended on a multisite where the plugin is activated site by site; the value is `['key_hash' => sha256 of the key, 'manifest' => …]`, and a manifest cached for another key is ignored. Failed fetches are tracked in the same name plus `_failure`.
 
 ### Which site is licensed
 
@@ -533,7 +563,7 @@ The SDK ships with a thin WordPress function stub layer (`tests/WpStub.php`) so 
 - `LicenseClient` — activate payload shape, manifest endpoint URL + bearer header + optional `current_version`.
 - `LicenseManager` — classify precedence, refusal vs. transient failures, deactivate results, site list, stored details.
 - `LicenseEndpoints` / `AccountEndpoints` — AJAX sub-actions through `dispatch()`.
-- `PluginUpdater` — manifest failure backoff.
+- `PluginUpdater` — manifest failure backoff; update offer withdrawn when unlicensed or held back, per-key and per-subsite cache, flush on `license_changed`, `plugins_api` details.
 - `PremiumServiceProvider::uninstall()`.
 
 Add your own tests under `tests/Unit/<area>/` — queue fake HTTP responses with `WpStub::queueJson()` / `WpStub::queueError()` between calls.

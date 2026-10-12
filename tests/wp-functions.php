@@ -471,3 +471,23 @@ if (! function_exists('WP_Filesystem')) {
         return $args !== false;
     }
 }
+
+if (! function_exists('do_action')) {
+    function do_action(string $tag, ...$args): void
+    {
+        WpStub::$actionLog[] = [$tag, $args];
+
+        if (empty(WpStub::$filters[$tag])) {
+            return;
+        }
+
+        $byPriority = WpStub::$filters[$tag];
+        ksort($byPriority);
+
+        foreach ($byPriority as $callbacks) {
+            foreach ($callbacks as $callback) {
+                $callback(...$args);
+            }
+        }
+    }
+}

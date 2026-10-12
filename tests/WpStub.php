@@ -87,6 +87,13 @@ class WpStub
     public static array $filters = [];
 
     /**
+     * Every do_action() call, in order: [tag, args].
+     *
+     * @var array<int, array{0: string, 1: array<int, mixed>}>
+     */
+    public static array $actionLog = [];
+
+    /**
      * Every wp_send_json_* payload, in order: ['success' => bool, 'data' => mixed, 'status' => int|null].
      *
      * @var array<int, array{success: bool, data: mixed, status: int|null}>
@@ -122,6 +129,7 @@ class WpStub
         self::$responseQueue = [];
         self::$requestLog = [];
         self::$filters = [];
+        self::$actionLog = [];
         self::$jsonResponses = [];
         self::$homeUrl = 'https://example.com';
         self::$networkHomeUrl = 'https://example.com';

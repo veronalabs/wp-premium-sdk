@@ -89,4 +89,59 @@ class PremiumStoreTest extends TestCase
     {
         $this->assertFalse($this->store->verifyOAuthState('nope'));
     }
+
+    public function test_a_license_change_fires_license_changed_without_the_key(): void
+    {
+        $this->store->set('license', ['license_key' => 'cipher', 'status' => 'active', 'expires_at' => '2027-01-01', 'activated_at' => 100]);
+
+        [$tag, $args] = WpStub::$actionLog[0];
+        $this->assertSame('wp_premium_sdk/license_changed', $tag);
+        $this->assertSame('wp-statistics', $args[0]);
+        $this->assertNull($args[1], 'No license before.');
+        $this->assertSame('active', $args[2]['status']);
+        $this->assertSame('2027-01-01', $args[2]['expires_at']);
+        $this->assertArrayNotHasKey('license_key', $args[2]);
+    }
+
+    public function test_a_write_that_changes_nothing_entitlement_depends_on_is_silent(): void
+    {
+        $this->store->set('license', ['license_key' => 'cipher-1', 'status' => 'active', 'activated_at' => 100]);
+        WpStub::$actionLog = [];
+
+        $this->store->set('license', ['license_key' => 'cipher-2', 'status' => 'active', 'activated_at' => 100, 'last_validated_at' => 200]);
+        $this->store->set('account', ['token' => 't']);
+
+        $this->assertSame([], WpStub::$actionLog);
+    }
+
+    public function test_each_entitlement_change_fires(): void
+    {
+        $base = ['status' => 'active', 'activated_at' => 100, 'tier_slug' => 'basic', 'features' => ['a'], 'max_activations' => 1];
+        $this->store->set('license', $base);
+
+        foreach ([['status' => 'expired'], ['tier_slug' => 'pro'], ['features' => ['a', 'b']], ['max_activations' => 5], ['activated_at' => 200]] as $change) {
+            WpStub::$actionLog = [];
+            $this->store->set('license', array_merge($base, $change));
+            $this->assertCount(1, WpStub::$actionLog, 'Change: '.json_encode($change));
+            $this->store->set('license', $base);
+        }
+    }
+
+    public function test_removing_the_license_fires_with_a_null_new_value(): void
+    {
+        $this->store->set('license', ['status' => 'active']);
+        $this->store->set('account', ['token' => 't']);
+        WpStub::$actionLog = [];
+
+        $this->store->delete('license');
+
+        $this->assertNull(WpStub::$actionLog[0][1][2]);
+
+        $this->store->set('license', ['status' => 'active']);
+        WpStub::$actionLog = [];
+        $this->store->clear();
+
+        $this->assertCount(1, WpStub::$actionLog);
+        $this->assertNull(WpStub::$actionLog[0][1][2]);
+    }
 }

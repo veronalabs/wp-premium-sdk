@@ -55,8 +55,18 @@ class LicenseClientTest extends TestCase
 
         $this->assertSame('8.0.0', $result['manifest']['version']);
         $this->assertStringContainsString('/api/v1/wp-statistics/update/manifest', WpStub::$requestLog[0]['url']);
-        $this->assertStringContainsString('license_key=KEY-001', WpStub::$requestLog[0]['url']);
         $this->assertStringContainsString('current_version=7.9.0', WpStub::$requestLog[0]['url']);
+    }
+
+    public function test_fetch_manifest_sends_the_key_in_a_header_not_the_url(): void
+    {
+        WpStub::queueJson(200, ['success' => true, 'update_available' => false]);
+
+        $this->client->fetchManifest('KEY-001', '7.9.0');
+
+        $this->assertSame('KEY-001', WpStub::$requestLog[0]['args']['headers']['X-License-Key']);
+        $this->assertStringNotContainsString('license_key', WpStub::$requestLog[0]['url']);
+        $this->assertStringNotContainsString('KEY-001', WpStub::$requestLog[0]['url']);
     }
 
     public function test_fetch_manifest_with_token_sends_bearer_header(): void

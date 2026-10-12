@@ -68,11 +68,14 @@ class LicenseClient
     /**
      * Fetch the unified update manifest (plugin + every licensed module at one version).
      *
+     * The key travels in the `X-License-Key` header, never in the URL, so it stays
+     * out of access logs along the way (Nexus, CDN, proxies, HTTP loggers).
+     *
      * @throws Exception
      */
     public function fetchManifest(string $licenseKey, ?string $currentVersion = null): array
     {
-        $query = ['license_key' => $licenseKey];
+        $query = [];
 
         if ($currentVersion !== null) {
             $query['current_version'] = $currentVersion;
@@ -80,7 +83,8 @@ class LicenseClient
 
         return $this->http->get(
             '/api/v1/'.$this->config->productSlug().'/update/manifest',
-            $query
+            $query,
+            ['X-License-Key' => $licenseKey]
         );
     }
 

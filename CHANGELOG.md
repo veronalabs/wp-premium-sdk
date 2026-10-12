@@ -29,6 +29,9 @@ All notable changes to this package are documented here. The format follows
 - `SodiumEncryptor` takes `$networkWide`, keeping its no-salts fallback key in a site option, so a value it encrypts reads back on every subsite. (#17)
 - Error codes `key_from_constant`, `network_managed`, `domain_unchanged`, `file_mods_disabled`, `filesystem_credentials_needed`, `installed_tier_unknown`, `licensed_tier_unknown`, `package_unavailable`, `install_failed`, carried by the new `LicenseActionException`.
 - `PremiumServiceProvider` accessors `keySource()`, `networkLicense()`, `autoActivator()`, `tierPackageInstaller()`.
+- Action `wp_premium_sdk/license_changed` (`$productSlug`, `$old`, `$new`): fires from `PremiumStore` whenever a write of the license section changes the activation (`license_id`, `activated_at`), `status`, `expires_at`, `tier_slug`, `features` or the seat counts, on every path (refresh, wp-config and network keys, account sign-in, network activation, removal). Snapshots never hold the key; a refresh that changes nothing stays silent. `PluginUpdater` listens and flushes its manifest cache and backoff, so a renewal or a key change is seen on the next check instead of up to 12 hours later. (#34)
+- Filter `wp_premium_sdk/update_allowed` (`$allowed`, `$productSlug`, `$manifest`): return false to hold back the update in the manifest. (#33)
+- `plugins_api` handler: "View version x.y.z details" for the premium update shows the version, requirements and changelog from the cached manifest instead of wordpress.org's answer. It never makes a request; with nothing cached WordPress carries on as before. (#41)
 
 ### Changed
 
@@ -43,10 +46,13 @@ All notable changes to this package are documented here. The format follows
 - The account session is deleted on every way out of the picker: any successful activation (by key too, including a constant or network key), signing out, and passing its `expires_at`, checked on every read rather than only when Nexus answers 401. (#10)
 - `uninstall()` also deletes the network key and its fallback cipher key on a multisite. (#17)
 - `LicenseEndpoints` and `LicenseBootstrap` take the new services in their constructors; `PremiumServiceProvider` wires them. `AbstractAjaxEndpoint` gains `requiredCapability()`. `LicenseManager::releaseSeat()` is public.
+- **The update-manifest request sends the license key in the `X-License-Key` header instead of the `license_key` query parameter**, so the key no longer lands in access logs. Needs a Nexus that reads the header (veronalabs/nexus#1236). (#35)
+- The manifest cache belongs to the key that fetched it (the value carries a hash of the key; a manifest cached for another key is ignored), and on a multisite where the plugin is activated site by site each subsite has its own entry, `wp_premium_sdk_manifest_{product_slug}_{blog_id}`. Network-activated plugins keep one network-wide entry. (#33)
 - README: fixed the non-existent `deactivateAndCleanup()` and `removeAll()` examples, documented `uninstall()`, the sign-in flow, the new sub-actions and the full data model. (#21)
 
 ### Fixed
 
+- An update offered while the license was valid is withdrawn once it stops being valid: the update-check filter moves the plugin from `response` to `no_update` when the license is not valid, when Nexus reports no update, or when the host's `wp_premium_sdk/update_allowed` filter says no. A failed fetch leaves the transient alone. (#33)
 - On a network, a subsite activated with a key of its own before the plugin was network-activated keeps it. `activate_all`, `activate_sites` and the subsite's own admin load no longer replace it with the network key (which left its seat on the old key taken), and it no longer counts as waiting. The network `get_status` reports `has_own_key` per subsite and `subsites_own_key` in the seat summary. The new network sub-action `switch_to_network_key` (`blog_ids`) moves such subsites to the network key on purpose: it activates the network key first, then releases the own key's seat, reporting `released` per subsite. (#24)
 - `Request::normaliseDomain()` drops any port, not just `:80` and `:443`, matching `currentDomain()`. A network subsite on a site served on a port (e.g. `localhost:8890`) now counts as holding the seat it activated. (#25)
 - `PremiumServiceProvider::uninstall()` also deletes the network's new-sites list (`{option_key}_network_new_sites`). (#26)
