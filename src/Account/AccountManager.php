@@ -16,7 +16,9 @@ use VeronaLabs\WpPremiumSdk\Store\PremiumStore;
  * Orchestrates the OAuth account login flow with Nexus.
  *
  * 1. getAuthorizeUrl() → redirect user to Nexus /connect/{product}/authorize
- * 2. handleOAuthCallback() → exchange code for token, store session
+ *    with a PKCE challenge; the verifier stays on this server with the state
+ * 2. handleOAuthCallback() → exchange code (and the verifier) for a token,
+ *    store session
  * 3. activateLicense() → pick a license from the user's Nexus account
  *    and activate it on this site via LicenseManager
  *
@@ -72,7 +74,11 @@ class AccountManager
     public function getAuthorizeUrl(?string $returnUrl = null): array
     {
         $state = bin2hex(random_bytes(16));
-        $this->store->setOAuthState($state);
+        // PKCE: the verifier is kept on this server with the state; Nexus gets only
+        // its challenge, and the code it returns is worthless without the verifier.
+        // This is what lets Nexus send the code to the site's own admin_url().
+        $codeVerifier = Pkce::createVerifier();
+        $this->store->setOAuthState($state, $codeVerifier);
 
         // Always send Nexus a known-safe admin URL. The original page (which
         // may include a React hash route like #/license) is tunneled through
@@ -94,6 +100,8 @@ class AccountManager
             'redirect_uri' => $redirectUri,
             'code_param' => $callbackParams['code'] ?? 'wps_oauth_code',
             'state_param' => $callbackParams['state'] ?? 'wps_oauth_state',
+            'code_challenge' => Pkce::challenge($codeVerifier),
+            'code_challenge_method' => Pkce::METHOD,
         ]);
 
         return ['authorize_url' => $url, 'state' => $state];
@@ -106,11 +114,14 @@ class AccountManager
      */
     public function handleOAuthCallback(string $code, string $state, LicenseManager $licenseManager): array
     {
-        if (! $this->store->verifyOAuthState($state)) {
+        // Consuming the state also deletes its verifier: one exchange per sign-in.
+        $codeVerifier = $this->store->consumeOAuthState($state);
+
+        if ($codeVerifier === null) {
             throw new Exception(__('Invalid or expired OAuth state.', $this->config->textDomain()));
         }
 
-        $response = $this->client->exchangeCode($code);
+        $response = $this->client->exchangeCode($code, $codeVerifier);
 
         if (empty($response['access_token'])) {
             throw new Exception(__('Nexus did not return an access token.', $this->config->textDomain()));

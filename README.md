@@ -563,7 +563,16 @@ Everything the SDK stores lives in one `wp_options` row (keyed by `ClientConfig:
 
 The `get_status` sub-action adds `state`, the `classify()` result: `{code, days_remaining, raw_status}`.
 
-OAuth CSRF state tokens are short-lived transients keyed by `{oauth_state_prefix}{state}` (10-minute TTL).
+OAuth CSRF state tokens are short-lived transients keyed by `{oauth_state_prefix}{state}` (10-minute TTL). Each holds `['code_verifier' => ...]`, the sign-in's PKCE verifier, and is deleted when the callback uses it.
+
+### How account sign-in works
+
+1. `getAuthorizeUrl()` makes a random state and a random PKCE code verifier, keeps both on the server, and sends the customer to Nexus with the state and the verifier's S256 `code_challenge`. The verifier itself never leaves the server.
+2. The customer signs in on Nexus (or is already signed in), sees this site's address and presses Allow.
+3. Nexus sends the customer back to this site's `admin_url()` with a one-time code and the state.
+4. `handleOAuthCallback()` checks the state, then sends the code and the verifier to Nexus for an access token. The state and verifier are deleted on the way, so a code can be exchanged only once, and a leaked code is useless without the verifier. An unknown or expired state is refused without contacting Nexus.
+
+This needs a Nexus with PKCE (veronalabs/nexus#1247); an older Nexus refuses the site's own address as the place to send the customer back.
 
 A network-activated plugin also keeps the network key in the site option `{option_key}_network` (`['license_key' => '<ciphertext>', 'updated_at' => int]`) and the ids of subsites created since in `{option_key}_network_new_sites`.
 

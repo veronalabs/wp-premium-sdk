@@ -83,6 +83,7 @@ All notable changes to this package are documented here. The format follows
 - **License keys no longer reach the browser or sit unencrypted in the option row.** `fetch_licenses`, the pending choice and `handleOAuthCallback()`'s return give each license an `id` and `license_key_masked` instead of `key` / `license_key`. `activate_license` takes `license_id` and looks the key up in the signed-in user's account (`license_key` is still accepted for a typed key). The pending choice is stored without keys, and a row stored with keys before this release is rewritten without them the next time the session is read. Host pickers that posted the key from the list must send `license_id`. (#36)
 
 - Account `remove_site` also needs `install_plugins` and answers `forbidden` without it. The sign-in belongs to the site, so any `manage_options` user can use it; releasing a seat touches the customer's other sites, so a multisite subsite admin (no `install_plugins`) can no longer do it with the shared sign-in. (#43)
+- **Account sign-in uses PKCE.** Each sign-in makes a random code verifier, keeps it on the server next to the OAuth state (same 10-minute life), and sends Nexus only its S256 `code_challenge` on the authorize URL. The verifier goes to Nexus on the code exchange and is deleted as the state is used, so a sign-in code that leaks on its way back is useless on its own. The verifier never goes into a URL, a cookie or the browser. This is what lets Nexus send the code back to the customer's own `admin_url()`, which it refused before with a 403 page. `PremiumStore::setOAuthState()` takes the verifier, `consumeOAuthState()` returns it, `AccountClient::exchangeCode()` sends it. (#47)
 
 ### Deprecated
 
@@ -97,6 +98,8 @@ All notable changes to this package are documented here. The format follows
 ### Upgrade notes
 
 - **Upgrade Nexus first.** The update-manifest request now sends the license key only in the `X-License-Key` header. Every Nexus store this SDK talks to, including the separate SlimStat store, must run veronalabs/nexus#1237 before any plugin ships this SDK. Against an older Nexus the manifest call answers 401, updates stop, and the failure is recorded as `manifest_auth_missing`. The SDK does not fall back to sending the key in the URL.
+
+- **Account sign-in needs Nexus with PKCE** (veronalabs/nexus#1247). Until that is deployed, sign-in still ends on Nexus's 403 page; entering a key works either way. A sign-in started before the upgrade still finishes (it is exchanged without a verifier). (#47)
 
 ### Host changes needed
 

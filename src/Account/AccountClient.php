@@ -24,16 +24,25 @@ class AccountClient
     /**
      * Exchange an OAuth authorization code for an access token via Nexus.
      *
+     * @param  string  $codeVerifier  The PKCE verifier the code was requested with;
+     *                                empty for a code requested without one.
+     *
      * @throws Exception
      */
-    public function exchangeCode(string $code): array
+    public function exchangeCode(string $code, string $codeVerifier = ''): array
     {
-        return $this->http->post('/api/v1/auth/exchange-code', [
+        $body = [
             'code' => $code,
             'product_slug' => $this->config->productSlug(),
             // Names the token on the account's device list.
             'device_name' => Request::currentDomain(),
-        ]);
+        ];
+
+        if ($codeVerifier !== '') {
+            $body['code_verifier'] = $codeVerifier;
+        }
+
+        return $this->http->post('/api/v1/auth/exchange-code', $body);
     }
 
     /**
