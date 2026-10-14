@@ -6,6 +6,7 @@ use Exception;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Http\ApiClient;
 use VeronaLabs\WpPremiumSdk\Http\ApiException;
+use VeronaLabs\WpPremiumSdk\Support\Request;
 
 /**
  * HTTP client for Nexus license + unified manifest endpoints.
@@ -85,15 +86,15 @@ class LicenseClient
      * `manifest_auth_missing` rather than `unknown`, so the failure is visible
      * (the key is never put back in the URL).
      *
+     * `domain` is the site asking, so Nexus can check it holds a seat on the
+     * license, as activate and validate do: this site's domain unless `$domain`
+     * names another (a network-wide update check sends the main site's).
+     *
      * @throws Exception
      */
-    public function fetchManifest(string $licenseKey, ?string $currentVersion = null): array
+    public function fetchManifest(string $licenseKey, ?string $currentVersion = null, ?string $domain = null): array
     {
-        $query = [];
-
-        if ($currentVersion !== null) {
-            $query['current_version'] = $currentVersion;
-        }
+        $query = $this->manifestQuery($currentVersion, $domain);
 
         try {
             return $this->http->get(
@@ -115,7 +116,24 @@ class LicenseClient
      *
      * @throws Exception
      */
-    public function fetchManifestWithToken(string $accessToken, ?string $currentVersion = null): array
+    public function fetchManifestWithToken(string $accessToken, ?string $currentVersion = null, ?string $domain = null): array
+    {
+        $query = $this->manifestQuery($currentVersion, $domain);
+
+        return $this->http->get(
+            '/api/v1/'.$this->config->productSlug().'/update/manifest',
+            $query,
+            ['Authorization' => 'Bearer '.$accessToken]
+        );
+    }
+
+    /**
+     * The manifest query: `current_version` when given, and `domain` (this site's
+     * unless another is named). A blank domain is left out.
+     *
+     * @return array<string, string>
+     */
+    private function manifestQuery(?string $currentVersion, ?string $domain): array
     {
         $query = [];
 
@@ -123,10 +141,12 @@ class LicenseClient
             $query['current_version'] = $currentVersion;
         }
 
-        return $this->http->get(
-            '/api/v1/'.$this->config->productSlug().'/update/manifest',
-            $query,
-            ['Authorization' => 'Bearer '.$accessToken]
-        );
+        $domain = $domain ?? Request::currentDomain();
+
+        if ($domain !== '') {
+            $query['domain'] = $domain;
+        }
+
+        return $query;
     }
 }

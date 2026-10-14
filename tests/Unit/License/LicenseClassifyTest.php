@@ -161,6 +161,29 @@ class LicenseClassifyTest extends TestCase
         $this->assertSame(LicenseErrorCode::DISABLED, $this->manager->classify()['code']);
     }
 
+    public function test_a_cancelled_license_is_disabled_not_invalid(): void
+    {
+        $this->seed(['status' => 'cancelled', 'error_code' => 'key_disabled', 'expires_at' => $this->inDays(60)]);
+
+        $this->assertSame(LicenseErrorCode::DISABLED, $this->manager->classify()['code']);
+    }
+
+    public function test_cancelled_alone_or_key_disabled_alone_is_disabled(): void
+    {
+        $this->seed(['status' => 'cancelled', 'expires_at' => $this->inDays(60)]);
+        $this->assertSame(LicenseErrorCode::DISABLED, $this->manager->classify()['code']);
+
+        $this->seed(['status' => 'blocked', 'error_code' => 'key_disabled', 'expires_at' => $this->inDays(60)]);
+        $this->assertSame(LicenseErrorCode::DISABLED, $this->manager->classify()['code']);
+    }
+
+    public function test_cancelled_outranks_expired(): void
+    {
+        $this->seed(['status' => 'cancelled', 'error_code' => 'key_disabled', 'expires_at' => $this->inDays(-10)]);
+
+        $this->assertSame(LicenseErrorCode::DISABLED, $this->manager->classify()['code']);
+    }
+
     public function test_unlimited_seats_are_never_over_limit(): void
     {
         // max_activations 0 means "unlimited" — never over limit.

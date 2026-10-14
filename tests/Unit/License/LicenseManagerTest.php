@@ -73,6 +73,39 @@ class LicenseManagerTest extends TestCase
         $this->assertSame('2027-01-01T00:00:00+00:00', $this->manager->getLicenseData()['expires_at']);
     }
 
+    public function test_activate_prefers_the_top_level_expiry_over_the_nested_one(): void
+    {
+        $license = ['status' => 'active', 'features' => [], 'expires_at' => '2026-11-01T00:00:00+00:00'];
+        WpStub::queueJson(200, ['success' => true, 'expires_at' => '2027-11-01T00:00:00+00:00', 'license' => $license]);
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]);
+
+        $this->manager->activate('KEY-001');
+
+        $this->assertSame('2027-11-01T00:00:00+00:00', $this->manager->getLicenseData()['expires_at']);
+    }
+
+    public function test_a_top_level_null_expiry_is_a_lifetime_license(): void
+    {
+        $license = ['status' => 'active', 'features' => [], 'expires_at' => '2026-11-01T00:00:00+00:00'];
+        WpStub::queueJson(200, ['success' => true, 'expires_at' => null, 'license' => $license]);
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]);
+
+        $this->manager->activate('KEY-001');
+
+        $this->assertSame('', $this->manager->getLicenseData()['expires_at']);
+        $this->assertNull($this->manager->classify()['days_remaining']);
+    }
+
+    public function test_a_validate_reply_without_a_top_level_expiry_uses_the_nested_one(): void
+    {
+        $this->activateWith('2026-11-01T00:00:00+00:00');
+
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active', 'expires_at' => '2027-03-01T00:00:00+00:00']]);
+        $this->manager->refreshStatus();
+
+        $this->assertSame('2027-03-01T00:00:00+00:00', $this->manager->getLicenseData()['expires_at']);
+    }
+
     public function test_refresh_status_validates_without_a_domain(): void
     {
         $this->activateWith('2027-01-01T00:00:00+00:00');

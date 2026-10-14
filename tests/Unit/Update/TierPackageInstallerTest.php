@@ -97,6 +97,7 @@ class TierPackageInstallerTest extends TestCase
         $url = WpStub::$requestLog[0]['url'];
         $this->assertStringContainsString('/api/v1/wp-statistics/update/manifest', $url);
         $this->assertStringNotContainsString('current_version', $url, 'Asked without the installed version, so the package comes back.');
+        $this->assertStringContainsString('domain=example.com', $url, 'Nexus checks this site holds a seat.');
         $this->assertArrayNotHasKey(self::MANIFEST_KEY, WpStub::$siteTransients);
     }
 

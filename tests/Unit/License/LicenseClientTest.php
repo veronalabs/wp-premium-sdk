@@ -58,6 +58,36 @@ class LicenseClientTest extends TestCase
         $this->assertStringContainsString('current_version=7.9.0', WpStub::$requestLog[0]['url']);
     }
 
+    public function test_fetch_manifest_sends_this_sites_domain(): void
+    {
+        WpStub::$homeUrl = 'https://www.example.com/blog/';
+        WpStub::queueJson(200, ['update_available' => false]);
+
+        $this->client->fetchManifest('KEY-001', '7.9.0');
+
+        parse_str((string) parse_url(WpStub::$requestLog[0]['url'], PHP_URL_QUERY), $query);
+        $this->assertSame(['current_version' => '7.9.0', 'domain' => 'example.com/blog'], $query);
+    }
+
+    public function test_fetch_manifest_without_a_version_still_sends_the_domain(): void
+    {
+        WpStub::queueJson(200, ['update_available' => false]);
+
+        $this->client->fetchManifest('KEY-001');
+
+        parse_str((string) parse_url(WpStub::$requestLog[0]['url'], PHP_URL_QUERY), $query);
+        $this->assertSame(['domain' => 'example.com'], $query);
+    }
+
+    public function test_fetch_manifest_with_token_sends_the_domain(): void
+    {
+        WpStub::queueJson(200, ['update_available' => false]);
+
+        $this->client->fetchManifestWithToken('tok_xyz', '7.9.0');
+
+        $this->assertStringContainsString('domain=example.com', WpStub::$requestLog[0]['url']);
+    }
+
     public function test_fetch_manifest_sends_the_key_in_a_header_not_the_url(): void
     {
         WpStub::queueJson(200, ['success' => true, 'update_available' => false]);
