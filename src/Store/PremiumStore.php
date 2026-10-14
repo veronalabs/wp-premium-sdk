@@ -9,7 +9,8 @@ use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
  *
  * All plugin data lives in one wp_options row (keyed by ClientConfig::optionKey())
  * with sections "license" and "account". A short-lived transient handles OAuth
- * CSRF state tokens. Loaded once per request and memoized.
+ * CSRF state tokens and the PKCE code verifier kept with each. Loaded once per
+ * request and memoized.
  *
  * Every write of the license section goes through here, so this is where a change
  * to what the site is entitled to is noticed: when the key (activation), status,
@@ -153,9 +154,13 @@ class PremiumStore
         do_action('wp_premium_sdk/license_changed', $this->config->productSlug(), $old, $new);
     }
 
-    public function setOAuthState(string $state): void
+    /**
+     * Keep a one-time OAuth CSRF state token for 10 minutes, with the PKCE code
+     * verifier of the sign-in it belongs to. Both live only on this server.
+     */
+    public function setOAuthState(string $state, string $codeVerifier = ''): void
     {
-        set_transient($this->config->oauthStatePrefix().$state, true, self::OAUTH_STATE_TTL);
+        set_transient($this->config->oauthStatePrefix().$state, ['code_verifier' => $codeVerifier], self::OAUTH_STATE_TTL);
     }
 
     /**
@@ -163,15 +168,27 @@ class PremiumStore
      */
     public function verifyOAuthState(string $state): bool
     {
-        $key = $this->config->oauthStatePrefix().$state;
+        return $this->consumeOAuthState($state) !== null;
+    }
 
-        if (! get_transient($key)) {
-            return false;
+    /**
+     * Verify and consume a one-time OAuth CSRF state token, returning the PKCE code
+     * verifier kept with it: null when the state is unknown or expired, and an empty
+     * string for a state kept without one (started before PKCE). The state and its
+     * verifier are deleted either way, so neither can be used twice.
+     */
+    public function consumeOAuthState(string $state): ?string
+    {
+        $key = $this->config->oauthStatePrefix().$state;
+        $stored = get_transient($key);
+
+        if (! $stored) {
+            return null;
         }
 
         delete_transient($key);
 
-        return true;
+        return is_array($stored) && is_string($stored['code_verifier'] ?? null) ? $stored['code_verifier'] : '';
     }
 
     public function resetCache(): void

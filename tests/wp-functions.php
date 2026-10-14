@@ -127,6 +127,13 @@ if (! function_exists('home_url')) {
     }
 }
 
+if (! function_exists('admin_url')) {
+    function admin_url(string $path = ''): string
+    {
+        return rtrim(WpStub::$homeUrl, '/').'/wp-admin/'.$path;
+    }
+}
+
 if (! function_exists('network_home_url')) {
     function network_home_url(string $path = ''): string
     {
