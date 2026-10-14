@@ -77,6 +77,9 @@ All notable changes to this package are documented here. The format follows
 - The shared activation gate no longer receives the scoped gate's result, so an old shared callback that returns null cannot cancel a scoped veto; a veto from either filter blocks the activation. (#42)
 - `replaceKey()` treats the same license as the same: it compares `license_id` when both are known, else the keys trimmed and ignoring case (as Nexus does), so re-entering the current key in other case no longer releases this site's seat right after activating it. (#42)
 - `classify()` on a site Nexus says holds no activation (`site.active` false, e.g. a staging copy refused with `domain_not_allowed`) returns `not_activated_here` when the license is full (1 of 1), not `over_limit`; `over_limit` there needs more activations than seats. (#42)
+- A cancelled license is now reported as `disabled` instead of `invalid`, so the host can tell the customer the license was turned off rather than showing a generic error. `classify()` also reads a stored `error_code` of `key_disabled` as `disabled`, which covers cancelled, disabled and blocked keys. (#45)
+- After activation, the stored expiry date is the one at the top of Nexus's reply when it sends one, since that follows a subscription's paid period while the date inside `license` can be out of date. A top-level `expires_at: null` (a lifetime license) is stored as never expiring. A validate reply, which has no top-level date, still uses the one inside `license`. (#46)
+- The update check and the tier-package install now send this site's `domain` with the manifest request, the same one activate and validate send, so Nexus can check the site holds a seat on the license. On a network-activated plugin the network-wide check sends the main site's domain, whose activation the network key's updates rely on. `LicenseClient::fetchManifest()` and `fetchManifestWithToken()` take an optional `$domain`. (#48)
 
 ### Security
 

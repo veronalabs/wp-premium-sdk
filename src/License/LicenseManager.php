@@ -30,6 +30,9 @@ class LicenseManager
 
     private const SECONDS_PER_DAY = 86400;
 
+    /** The stored status Nexus sends for a cancelled license; classify() reports it as disabled. */
+    private const STATUS_CANCELLED = 'cancelled';
+
     private LicenseClient $client;
     private PremiumStore $store;
     private EncryptorInterface $encryptor;
@@ -448,6 +451,9 @@ class LicenseManager
      * host plugin maps the returned code to a translatable message under its own
      * text domain (see LicenseErrorCode and docs/nexus-license-error-codes.md).
      *
+     * A cancelled license (status `cancelled`) and any license stored with error
+     * code `key_disabled` classify as disabled.
+     *
      * Precedence (highest first): key_unreadable > suspended/revoked/disabled >
      * expired > over_limit > not_activated_here > expiring_soon > not_activated >
      * active. An unrecognized stored status falls through to "invalid". An empty
@@ -513,7 +519,7 @@ class LicenseManager
         $site = is_array($data['site'] ?? null) ? $data['site'] : [];
 
         return [
-            'code' => $this->resolveStateCode($rawStatus, $expiredByDate, $daysRemaining, $this->isOverLimit($maxActivations, $activationCount, $site), ($site['active'] ?? null) === false),
+            'code' => $this->resolveStateCode($rawStatus, $expiredByDate, $daysRemaining, $this->isOverLimit($maxActivations, $activationCount, $site), ($site['active'] ?? null) === false, (string) ($data['error_code'] ?? '')),
             'days_remaining' => $daysRemaining,
             'raw_status' => $rawStatus,
         ];
@@ -523,7 +529,7 @@ class LicenseManager
      * Apply notice precedence to the stored license signals and return the
      * single winning state code.
      */
-    private function resolveStateCode(string $rawStatus, bool $expiredByDate, ?int $daysRemaining, bool $overLimit, bool $notActivatedHere = false): string
+    private function resolveStateCode(string $rawStatus, bool $expiredByDate, ?int $daysRemaining, bool $overLimit, bool $notActivatedHere = false, string $errorCode = ''): string
     {
         // 1. Account-level holds — different action (contact support), so they
         //    outrank everything else.
@@ -535,7 +541,9 @@ class LicenseManager
             return LicenseErrorCode::REVOKED;
         }
 
-        if ($rawStatus === LicenseErrorCode::DISABLED) {
+        // Nexus refuses a cancelled, disabled or blocked key with `key_disabled`,
+        // and a cancelled one keeps its own status; all of them read as disabled.
+        if ($rawStatus === LicenseErrorCode::DISABLED || $rawStatus === self::STATUS_CANCELLED || $errorCode === LicenseErrorCode::KEY_DISABLED) {
             return LicenseErrorCode::DISABLED;
         }
 
@@ -821,7 +829,7 @@ class LicenseManager
             'license_type' => $licenseType,
             'plan_name' => $planName,
             'tier_slug' => $tierSlug,
-            'expires_at' => $license['expires_at'] ?? $response['expires_at'] ?? '',
+            'expires_at' => $this->mapExpiresAt($response, $license),
             'max_activations' => (int) ($license['max_activations'] ?? 0),
             'activation_count' => (int) ($license['activation_count'] ?? 0),
             'customer_name' => $license['customer_name'] ?? ($buyer['name'] ?? ($existing['customer_name'] ?? '')),
@@ -844,6 +852,28 @@ class LicenseManager
             // Last time Nexus actually answered — what the stored details date from.
             'last_success_at' => $now,
         ];
+    }
+
+    /**
+     * The expiry date to store. Nexus's top-level `expires_at` (on activate) follows
+     * the subscription's paid period, while the one inside `license` is the stored
+     * column and can trail it, so the top level wins whenever the reply has that
+     * key. A top-level null is a lifetime license and stays "never expires" rather
+     * than falling back to the nested date. A validate reply has no top-level key;
+     * its nested date is already the effective one.
+     *
+     * Empty string means never expires, as everywhere the stored license is read.
+     *
+     * @param  array<string, mixed>  $response
+     * @param  array<string, mixed>  $license
+     */
+    private function mapExpiresAt(array $response, array $license): string
+    {
+        if (array_key_exists('expires_at', $response)) {
+            return (string) ($response['expires_at'] ?? '');
+        }
+
+        return (string) ($license['expires_at'] ?? '');
     }
 
     /**

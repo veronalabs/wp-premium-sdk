@@ -10,6 +10,7 @@ use VeronaLabs\WpPremiumSdk\License\LicenseActionException;
 use VeronaLabs\WpPremiumSdk\License\LicenseClient;
 use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\License\LicenseManager;
+use VeronaLabs\WpPremiumSdk\Support\Request;
 
 /**
  * Bridges Nexus' unified manifest into WordPress' native plugin update flow.
@@ -315,7 +316,7 @@ class PluginUpdater
         }
 
         try {
-            $manifest = $this->client->fetchManifest($licenseKey, $this->config->currentVersion());
+            $manifest = $this->client->fetchManifest($licenseKey, $this->config->currentVersion(), $this->updateDomain());
         } catch (Exception $e) {
             $this->recordFailure($e);
 
@@ -379,7 +380,7 @@ class PluginUpdater
         }
 
         try {
-            $manifest = $this->client->fetchManifest($licenseKey, null);
+            $manifest = $this->client->fetchManifest($licenseKey, null, $this->updateDomain());
         } catch (Exception $e) {
             $this->recordFailure($e);
 
@@ -515,6 +516,24 @@ class PluginUpdater
         }
 
         return $key;
+    }
+
+    /**
+     * The domain the manifest request names, so Nexus checks the seat the update
+     * key stands for: this site's own, or on a network-wide check the main site's
+     * (its activated domain, else its home address), since that is the activation
+     * the network key's updates rely on. Null lets the client use this site's.
+     */
+    private function updateDomain(): ?string
+    {
+        if (! $this->isNetworkWide()) {
+            return null;
+        }
+
+        $mainLicense = $this->keySource->network()->mainSiteLicense();
+        $activated = is_array($mainLicense) ? (string) ($mainLicense['activated_domain'] ?? '') : '';
+
+        return $activated !== '' ? $activated : Request::normaliseDomain(get_home_url((int) get_main_site_id()));
     }
 
     /**

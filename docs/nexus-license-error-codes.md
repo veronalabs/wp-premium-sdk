@@ -126,7 +126,7 @@ expiry/activation fields.
 | `expired`       | Past expiry, or `status: expired`.               | Renew |
 | `suspended`     | `status: suspended`.                             | Contact support |
 | `revoked`       | `status: revoked`.                               | Contact support |
-| `disabled`      | `status: disabled`.                              | Contact support |
+| `disabled`      | `status: disabled` or `cancelled`, or `error_code: key_disabled`. | Contact support |
 | `over_limit`    | `activation_count > max_activations` (`max > 0`) — see below. | Manage activations |
 | `not_activated` | No key stored on this site.                      | Activate |
 | `invalid`       | `status` present but unrecognized (catch-all).   | (generic) |

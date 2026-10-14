@@ -588,7 +588,7 @@ The SDK ships with a thin WordPress function stub layer (`tests/WpStub.php`) so 
 - `SodiumEncryptor` — round-trip, ciphertext uniqueness, tamper detection, fallback key persistence.
 - `PremiumStore` — section isolation, one-time OAuth state, clear semantics.
 - `ApiClient` — URL building, query string, JSON body, error mapping, local-TLD SSL bypass.
-- `LicenseClient` — activate payload shape, manifest endpoint URL + `X-License-Key` / bearer header + optional `current_version`, a code-less manifest 401 reported as `manifest_auth_missing`.
+- `LicenseClient` — activate payload shape, manifest endpoint URL + `X-License-Key` / bearer header + optional `current_version` + this site's `domain`, a code-less manifest 401 reported as `manifest_auth_missing`.
 - `LicenseManager` — classify precedence, refusal vs. transient failures, deactivate results, site list, stored details.
 - `LicenseEndpoints` / `AccountEndpoints` — AJAX sub-actions through `dispatch()`.
 - `PluginUpdater` — manifest failure backoff; update offer withdrawn when unlicensed, held back or not newer than installed, per-key and per-subsite cache, flush on `license_changed` and `upgrader_process_complete`, `plugins_api` details (manifest or plugin header, `external`, `download_link`).
