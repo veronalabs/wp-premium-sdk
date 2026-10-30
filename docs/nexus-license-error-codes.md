@@ -95,11 +95,12 @@ decides what the failure means:
   (everything else, e.g. `invalid_key`, `wrong_product`), and `error_code`
   holds the code. When the body carries a `license` block, that is stored
   instead.
-- **Not this domain** — `domain_not_allowed` (a `validate()` from a domain that
-  holds no activation, e.g. a staging clone) is about the site's address, not
+- **Not this domain** — `domain_not_allowed` (a `validate()` or `refreshSites()`
+  from a domain that holds no activation, e.g. a staging clone, or a site the
+  owner removed in their account) is about the site's address, not
   the license: the stored `status` stays, `error_code` is set, and `site.active`
   becomes false, which `classify()` reports as `not_activated_here`. A later
-  domain-less `refreshStatus()` keeps it; activating here (or `move_license`)
+  domain-less `refreshStatus()` keeps both the code and `site.active`; activating here (or `move_license`)
   clears it. `isValid()` is false meanwhile, so the copy gets no updates until
   it is activated on its own address.
 
