@@ -482,11 +482,63 @@ class LicenseManagerTest extends TestCase
     public function test_refresh_sites_failure_keeps_list_and_state(): void
     {
         $this->activateWithSites();
-        WpStub::queueJson(403, ['error_code' => 'domain_not_allowed', 'message' => 'Domain not activated']);
+        WpStub::queueJson(503, ['message' => 'Service unavailable']);
 
         $this->assertFalse($this->manager->refreshSites());
         $this->assertCount(2, $this->manager->listSites());
-        $this->assertTrue($this->manager->isValid(), 'Listing sites must never change the license state.');
+        $this->assertTrue($this->manager->isValid(), 'A network failure must never change the license state.');
+    }
+
+    public function test_refresh_sites_ignores_an_error_reply_that_is_not_about_this_site(): void
+    {
+        $this->activateWithSites();
+        WpStub::queueJson(403, ['error_code' => 'license_suspended', 'message' => 'License is suspended']);
+
+        $this->assertFalse($this->manager->refreshSites());
+        $this->assertTrue($this->manager->isValid(), 'The license state is left to refreshStatus().');
+    }
+
+    /**
+     * #53: the owner removed this site in their account. refreshSites() is the only
+     * scheduled call that asks with this site's domain, so it must keep that answer.
+     */
+    public function test_refresh_sites_records_that_this_site_was_removed(): void
+    {
+        $this->activateWithSites();
+        WpStub::queueJson(403, ['success' => false, 'error' => 'domain_not_allowed', 'message' => 'Domain not activated', 'error_code' => 'domain_not_allowed']);
+
+        $this->assertFalse($this->manager->refreshSites(), 'Nexus sent no site list, so the list is not fresh.');
+
+        $data = $this->manager->getLicenseData();
+        $this->assertSame('active', $data['status']);
+        $this->assertSame('domain_not_allowed', $data['error_code']);
+        $this->assertFalse($data['site']['active']);
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
+        $this->assertFalse($this->manager->isValid());
+
+        // The next scheduled domain-less refresh must not bring it back, nor flip the
+        // stored code (each flip fires license_changed).
+        $cycle = function (): void {
+            WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active', 'max_activations' => 3]]);
+            $this->manager->refreshStatus();
+            WpStub::queueJson(403, ['success' => false, 'error' => 'domain_not_allowed', 'message' => 'Domain not activated', 'error_code' => 'domain_not_allowed']);
+            $this->manager->refreshSites();
+        };
+        $cycle();
+        WpStub::$actionLog = [];
+        $cycle();
+
+        $this->assertSame('domain_not_allowed', $this->manager->getLicenseData()['error_code']);
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
+        $this->assertFalse($this->manager->isValid());
+        $changes = array_filter(WpStub::$actionLog, fn (array $call): bool => $call[0] === 'wp_premium_sdk/license_changed');
+        $this->assertCount(0, $changes, 'A steady state must not fire license_changed.');
+
+        // Activated here again: the domain check clears it.
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active', 'site' => ['active' => true, 'is_counted' => true]]]);
+        $this->assertTrue($this->manager->refreshSites());
+        $this->assertSame('', $this->manager->getLicenseData()['error_code']);
+        $this->assertTrue($this->manager->isValid());
     }
 
     public function test_list_sites_flags_this_site(): void

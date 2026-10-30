@@ -249,7 +249,15 @@ class LicenseManager
      * A failure changes nothing: the cached list stays and the license state is
      * left to refreshStatus(), so opening the site list can never lock a site out.
      *
-     * @return bool Whether Nexus answered.
+     * Except `domain_not_allowed`. That is Nexus saying this site holds no seat —
+     * the owner removed it in their account — and this is the only call a scheduled
+     * refresh makes with this site's domain, so dropping it left the site active for
+     * good (#53). It is stored the way validate() stores it: the status stays and
+     * `site.active` becomes false. Transport errors and every other error reply are
+     * still ignored.
+     *
+     * @return bool Whether a fresh site list was stored. False for
+     *              `domain_not_allowed` too: Nexus sends no list with it.
      */
     public function refreshSites(): bool
     {
@@ -262,6 +270,10 @@ class LicenseManager
         try {
             $response = $this->client->validate($licenseKey, Request::currentDomain());
         } catch (Exception $e) {
+            if ($e instanceof ApiException && $e->getErrorCode() === LicenseErrorCode::DOMAIN_NOT_ALLOWED) {
+                $this->recordFailedCheck($e, $licenseKey);
+            }
+
             return false;
         }
 
@@ -825,7 +837,7 @@ class LicenseManager
             // being collapsed. Empty for the common "active" path.
             // Empty when the server sent none: this is a fresh answer, so an old
             // code must not outlive the problem it described.
-            'error_code' => (string) ($license['error_code'] ?? $response['error_code'] ?? ''),
+            'error_code' => $this->freshErrorCode($license, $response, $siteRaw, $existing),
             'license_type' => $licenseType,
             'plan_name' => $planName,
             'tier_slug' => $tierSlug,
@@ -893,6 +905,33 @@ class LicenseManager
         } catch (Exception $e) {
             return ['removed_remotely' => false, 'error_code' => LicenseErrorCode::UNKNOWN];
         }
+    }
+
+    /**
+     * The `error_code` to store from an answer: the one Nexus sent, or empty.
+     *
+     * One exception. A domain-less refresh says nothing about this site, so it keeps a
+     * `domain_not_allowed` the last domain check stored (with `site.active` false).
+     * Clearing it made the stored licence flip on every refreshStatus() +
+     * refreshSites() pair, and each flip fired `wp_premium_sdk/license_changed` (#53).
+     *
+     * @param  array<string, mixed>  $license
+     * @param  array<string, mixed>  $response
+     * @param  mixed  $siteRaw
+     * @param  array<string, mixed>|null  $existing
+     */
+    private function freshErrorCode(array $license, array $response, $siteRaw, ?array $existing): string
+    {
+        $code = (string) ($license['error_code'] ?? $response['error_code'] ?? '');
+
+        if ($code === ''
+            && ! is_array($siteRaw)
+            && ($existing['error_code'] ?? '') === LicenseErrorCode::DOMAIN_NOT_ALLOWED
+            && (($existing['site']['active'] ?? null) === false)) {
+            return LicenseErrorCode::DOMAIN_NOT_ALLOWED;
+        }
+
+        return $code;
     }
 
     /**
