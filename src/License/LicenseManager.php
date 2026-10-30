@@ -277,7 +277,18 @@ class LicenseManager
             return false;
         }
 
-        $this->store->set('license', $this->withActivatedDomain($this->mapApiResponse($response, $licenseKey, null, $this->store->get('license'))));
+        $licenseData = $this->mapApiResponse($response, $licenseKey, null, $this->store->get('license'));
+        $license = $response['license'] ?? $response['license_details'] ?? $response;
+        $siteRaw = $license['site'] ?? $response['site'] ?? null;
+
+        // A successful validation made with this domain proves it holds an
+        // activation, even when an older Nexus response omits the `site` block.
+        if (! is_array($siteRaw)) {
+            $site = is_array($licenseData['site'] ?? null) ? $licenseData['site'] : ['is_counted' => null];
+            $licenseData['site'] = ['active' => true] + $site;
+        }
+
+        $this->store->set('license', $this->withActivatedDomain($licenseData));
 
         return true;
     }
@@ -388,7 +399,7 @@ class LicenseManager
 
         try {
             $response = $this->client->validate($licenseKey, '');
-            $this->store->set('license', $this->mapApiResponse($response, $licenseKey, null, $existing));
+            $this->store->set('license', $this->mapApiResponse($response, $licenseKey, null, $existing, true));
 
             return true;
         } catch (Exception $e) {
@@ -782,9 +793,12 @@ class LicenseManager
     }
 
     /**
+     * @param  array<string, mixed>|null  $supplementary
+     * @param  array<string, mixed>|null  $existing
+     *
      * @return array<string, mixed>
      */
-    private function mapApiResponse(array $response, string $licenseKey, ?array $supplementary = null, ?array $existing = null): array
+    private function mapApiResponse(array $response, string $licenseKey, ?array $supplementary = null, ?array $existing = null, bool $preserveDomainRefusal = false): array
     {
         $license = $response['license'] ?? $response['license_details'] ?? $response;
         $features = $license['features'] ?? $response['features'] ?? [];
@@ -837,7 +851,7 @@ class LicenseManager
             // being collapsed. Empty for the common "active" path.
             // Empty when the server sent none: this is a fresh answer, so an old
             // code must not outlive the problem it described.
-            'error_code' => $this->freshErrorCode($license, $response, $siteRaw, $existing),
+            'error_code' => $this->freshErrorCode($license, $response, $siteRaw, $existing, $preserveDomainRefusal),
             'license_type' => $licenseType,
             'plan_name' => $planName,
             'tier_slug' => $tierSlug,
@@ -920,11 +934,12 @@ class LicenseManager
      * @param  mixed  $siteRaw
      * @param  array<string, mixed>|null  $existing
      */
-    private function freshErrorCode(array $license, array $response, $siteRaw, ?array $existing): string
+    private function freshErrorCode(array $license, array $response, $siteRaw, ?array $existing, bool $preserveDomainRefusal): string
     {
         $code = (string) ($license['error_code'] ?? $response['error_code'] ?? '');
 
-        if ($code === ''
+        if ($preserveDomainRefusal
+            && $code === ''
             && ! is_array($siteRaw)
             && ($existing['error_code'] ?? '') === LicenseErrorCode::DOMAIN_NOT_ALLOWED
             && (($existing['site']['active'] ?? null) === false)) {

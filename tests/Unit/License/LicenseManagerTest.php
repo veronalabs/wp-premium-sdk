@@ -541,6 +541,27 @@ class LicenseManagerTest extends TestCase
         $this->assertTrue($this->manager->isValid());
     }
 
+    public function test_refresh_sites_success_without_site_block_clears_domain_refusal(): void
+    {
+        $this->activateWithSites();
+        WpStub::queueJson(403, ['error_code' => 'domain_not_allowed', 'message' => 'Domain not activated']);
+        $this->assertFalse($this->manager->refreshSites());
+
+        // A successful domain-bound validation proves this site holds a seat even
+        // when an older Nexus response has no singular `site` block.
+        WpStub::queueJson(200, ['success' => true, 'license' => [
+            'status' => 'active',
+            'sites' => [['id' => 1, 'domain' => 'example.com', 'is_counted' => true]],
+        ]]);
+
+        $this->assertTrue($this->manager->refreshSites());
+        $data = $this->manager->getLicenseData();
+        $this->assertSame('', $data['error_code']);
+        $this->assertTrue($data['site']['active']);
+        $this->assertTrue($this->manager->isValid());
+        $this->assertSame(LicenseErrorCode::ACTIVE, $this->manager->classify()['code']);
+    }
+
     public function test_list_sites_flags_this_site(): void
     {
         WpStub::$homeUrl = 'https://www.example.com/';
