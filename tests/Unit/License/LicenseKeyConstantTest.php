@@ -181,6 +181,24 @@ class LicenseKeyConstantTest extends TestCase
         $this->assertTrue($sdk->licenseManager()->isActivated());
     }
 
+    /**
+     * #56: reactivate is refused like activate while the constant manages the key.
+     */
+    public function test_reactivate_refuses_a_key_from_the_constant(): void
+    {
+        define('SDK_TEST_KEY_REACTIVATE', 'CONST-KEY-0011');
+        $this->queueActivation();
+        $sdk = $this->provider(['license_key_constant' => 'SDK_TEST_KEY_REACTIVATE']);
+        $sdk->autoActivator()->run();
+        $calls = count(WpStub::$requestLog);
+
+        $response = $this->ajax($sdk, 'license', 'reactivate');
+
+        $this->assertFalse($response['success']);
+        $this->assertSame(LicenseErrorCode::KEY_FROM_CONSTANT, $response['data']['code']);
+        $this->assertCount($calls, WpStub::$requestLog);
+    }
+
     public function test_the_account_sign_in_cannot_replace_a_key_from_the_constant(): void
     {
         define('SDK_TEST_KEY_ACCOUNT', 'CONST-KEY-0008');

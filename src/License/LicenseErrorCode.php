@@ -94,6 +94,21 @@ final class LicenseErrorCode
     /** Too many requests — the caller is rate limited. Carries retry_after when known. */
     public const RATE_LIMITED = 'rate_limited';
 
+    /**
+     * The update manifest was asked with a license that covers several items (a
+     * bundle) and no `item_slug` naming which one is asking. Set ClientConfig
+     * `item_slug`. The SDK also uses it for the same 400 from a Nexus that sends
+     * no code yet ("… name one with item_slug").
+     */
+    public const ITEM_SLUG_REQUIRED = 'item_slug_required';
+
+    /**
+     * The update manifest was asked for an `item_slug` the license does not cover.
+     * Carries `covers` (the item slugs it does). The SDK also uses it for the same
+     * 403 from a Nexus that sends no code yet ("This license does not cover …").
+     */
+    public const ITEM_NOT_COVERED = 'item_not_covered';
+
     /** Nexus encountered an internal error. */
     public const SERVER_ERROR = 'server_error';
 
@@ -199,6 +214,8 @@ final class LicenseErrorCode
             self::WRONG_PRODUCT,
             self::TOKEN_EXPIRED,
             self::RATE_LIMITED,
+            self::ITEM_SLUG_REQUIRED,
+            self::ITEM_NOT_COVERED,
             self::SERVER_ERROR,
             self::UNKNOWN,
             self::NETWORK_ERROR,

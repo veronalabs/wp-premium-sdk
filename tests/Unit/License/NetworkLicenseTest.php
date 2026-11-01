@@ -159,7 +159,7 @@ class NetworkLicenseTest extends TestCase
         $sdk->autoActivator()->run();
         $calls = count(WpStub::$requestLog);
 
-        foreach (['activate' => ['license_key' => 'MINE'], 'deactivate' => [], 'remove_site' => ['domain' => 'other.com'], 'move_license' => []] as $subAction => $body) {
+        foreach (['activate' => ['license_key' => 'MINE'], 'reactivate' => [], 'deactivate' => [], 'remove_site' => ['domain' => 'other.com'], 'move_license' => []] as $subAction => $body) {
             $response = $this->ajax($sdk, 'license', $subAction, $body);
             $this->assertSame(LicenseErrorCode::NETWORK_MANAGED, $response['data']['code'], $subAction);
         }

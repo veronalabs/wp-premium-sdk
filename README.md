@@ -109,6 +109,7 @@ After `register()`:
 | `modules_path` | `''` | Absolute path to `pro/modules/`. Required for `ModuleLoader` / `FeatureInstaller`. |
 | `license_key_constant` | `''` | Name of a wp-config constant that may hold the license key, e.g. `WP_STATISTICS_LICENSE_KEY`. See [Managed keys](#managed-keys). |
 | `installed_tier` | `''` | Tier of the build that is installed (`basic`, `pro` …). Needed for `tier_mismatch` and `install_tier_package`. |
+| `item_slug` | `''` | The store item this plugin is, sent as `item_slug` with every update-manifest request. Set it when a license can cover several items (a bundle such as All-in-One): without it the store cannot tell which package to send and refuses with `item_slug_required`. Left empty, the request is the same as before. |
 | `nonce_action` | `''` | Nonce action every AJAX endpoint checks. Empty means one per endpoint: `{ajax_action}_license`, `{ajax_action}_network_license`, `{ajax_action}_account`. Set it to share one nonce across all of them. |
 | `nonce_param` | `nonce` | Request parameter the AJAX endpoints read the nonce from. |
 
@@ -187,10 +188,11 @@ $license->deactivate();              // → ['removed_remotely' => bool, 'error_
 $license->isActivated();             // bool
 $license->isValid();                 // bool — active, not expired, activated on this site
 $license->classify();                // ['code' => 'active'|'expired'|..., 'days_remaining' => ?int, 'raw_status' => string]
+LicenseManager::classifyLicense($row, $now); // the same, for any stored license section (e.g. the network's)
 $license->hasFeature('pro-reports'); // bool
 $license->getFeatures();             // ['pro-reports', 'api', ...]
 $license->getTier();                 // 'pro' | null
-$license->getRenewal();              // cached renewal block | null
+$license->getRenewal();              // cached renewal block | null (a coupon past its expires_at is left out)
 $license->getLicenseData();          // public snapshot, no raw key
 $license->getLicenseKey();           // decrypted raw key — internal use only
 
@@ -201,6 +203,7 @@ $license->removeSite('other.com');   // releases another site's seat, then refre
 $license->getSource();               // 'manual' | 'constant' | 'network' | null
 $license->domainChange();            // ['was' => 'example.com', 'now' => 'staging.example.com'] | null
 $license->moveLicense();             // activate here, then release the old domain (see move_license)
+$license->reactivate();              // activate the stored key again on this domain (see reactivate)
 ```
 
 Keys are encrypted via the injected `EncryptorInterface` before storage and decrypted on read.
@@ -224,6 +227,12 @@ The shared `wp_premium_sdk/activation_gate` filter still runs for every product 
 `refreshStatus()` keeps the cached license when a check fails for reasons that say nothing about it. When Nexus rate limits it with a `Retry-After`, the wait (at most a day) is stored as `retry_at` and no check is made before then, forced or not; `retryAt()` reports it. Passing a minimum interval skips the call when the last check was more recent than that; `get_status` passes `LicenseManager::MIN_REFRESH_INTERVAL` (60 seconds).
 
 A stored key that can no longer be decrypted (the WordPress salts changed, or the `{option_key}_cipher` fallback key was lost) is reported, not fatal: `getLicenseKey()` is null, `isValid()` is false, `classify()` returns `key_unreadable` and `getLicenseData()` leaves out `license_key_masked`. `isActivated()` stays true, so `deactivate()` can still clear it; the host asks for the key again.
+
+`classifyLicense(array $license, ?int $now = null)` is `classify()` for a stored license section that is not this site's: another subsite's row, or the network's license (`NetworkLicense::freshestLicense()`, the freshest subsite row activated with the network key). It applies the same precedence and returns the same shape. It reads the row's own `site` block when there is one; leave `site` out to judge the license as a whole. It cannot tell whether the key decrypts, so it never returns `key_unreadable`.
+
+A license whose subscription renews on its own (`renewal.auto_renews` true, not cancelled, last charge not failed) is never `expiring_soon`: the card on file will be charged. A failed renewal charge (`renewal.state: payment_failed`) or a subscription cancelled at period end still warns.
+
+`getRenewal()` and the stored license drop `renewal.offer` once the coupon's own `offer.expires_at` has passed. A refresh that omits the renewal block still keeps the rest of the last one.
 
 `activate()` stores `activated_domain`, the normalised domain it activated. When `home_url()` later normalises to something else — a staging copy cloned from production, or a site moved to a new address — `domainChange()` reports both. `moveLicense()` activates the current domain first and releases the old one only once that worked. Whether the new domain uses a seat is Nexus's call (`license.site.is_counted` in the activate reply); by default the old domain is released only when the new one is counted, so a development copy never cuts production off.
 
@@ -406,7 +415,7 @@ Every subsite still counts as its own site (see [Which site is licensed](#which-
 - The key is stored network-wide in the site option `{option_key}_network`, encrypted. Salts are shared across a network, so every subsite can read it; without salts the fallback cipher key lives in the site option `{option_key}_network_cipher`.
 - Each subsite activates on its own `home_url()` with its own seat and keeps its activation in its own option row.
 - **Seats are not handed out in visit order.** A subsite activates itself on admin load only when the license has a free seat for every subsite still waiting (or is unlimited), or — for a subsite created after the key was entered (`wp_initialize_site`) — while any seat is left. While nobody knows the seat count yet, only the main site tries. Otherwise nothing happens on its own: the network admin chooses with `activate_all` or `activate_sites`.
-- Subsite license pages are view-only and carry no seat notice: `get_status` reports `context: "network"`, `is_network_managed: true` and `auto_activation: null`; an unseated subsite is simply `not_activated`. `activate`, `deactivate`, `remove_site` and `move_license` refuse with `network_managed`. The shortfall is shown in Network Admin only.
+- Subsite license pages are view-only and carry no seat notice: `get_status` reports `context: "network"`, `is_network_managed: true` and `auto_activation: null`; an unseated subsite is simply `not_activated`. `activate`, `reactivate`, `deactivate`, `remove_site` and `move_license` refuse with `network_managed`. The shortfall is shown in Network Admin only.
 - Updates are network-wide: see [`PluginUpdater`](#pluginupdater).
 - Migration: when the plugin becomes network-activated and no network key exists yet, the main site's stored key is adopted (on the main site or in Network Admin).
 - When the network admin removes the key, the main site's license goes at once and each other subsite's on its next admin load, releasing its seat. When the plugin is network-deactivated instead, subsites keep their licenses as their own.
@@ -426,13 +435,14 @@ POST `sub_action` values:
 | `sub_action` | Purpose |
 |---|---|
 | `activate` | Body: `license_key`. Activates + stores, through `replaceKey()`: a different key stored before has its seat on this domain released once the new one is active. Returns `license` and `released` (`{removed_remotely, error_code}`, or null when there was nothing to release). |
+| `reactivate` | No body. Activates the stored key again on this site's domain, for "Activate on this site" when the state is `not_activated_here` (the owner removed this site in their account). The key is stored again as entered here (`source: manual`), never as a stale `constant`. Returns `license`. Errors: `not_activated` (no key stored), `key_unreadable`, `key_from_constant` / `network_managed` (managed elsewhere), or Nexus's code (e.g. `activation_limit_reached`). |
 | `deactivate` | Removes the local license (modules stay). Returns `removed: []`, `removed_remotely`, `error_code`. |
 | `get_status` | Refreshes from Nexus (at most once a minute unless body `force` is `1`, and never while a `Retry-After` wait runs), then returns `fresh` (whether Nexus answered just now), `retry_at` (until when Nexus asked us to wait, or null), `is_activated`, `is_valid`, `license` snapshot, `state` (the `classify()` result), `installed_features`, `source` (`manual` / `constant` / `network`), `auto_activation` (last failed automatic activation or null; always null on a network-managed subsite), `context` (`site` / `network`), `is_network_managed`, `domain_changed` (`{was, now}` or null) and `tier_mismatch` (`{installed, licensed}` from the cached manifest, or null). |
 | `list_sites` | Fetches the license's sites from Nexus (cached list when it can't be reached, `fresh: false`). If Nexus says this site holds no seat (`domain_not_allowed`), that is stored, so the license reads `not_activated_here`, and the cached list comes back with `fresh: false`. Returns `sites` (each with `this_site`), `max_activations`, `activation_count`, `manage_url`. |
 | `remove_site` | Body: `domain`. Releases that site's seat with this site's license key, then returns the refreshed `sites`. This site is refused with code `this_site` — use `deactivate`. |
 | `move_license` | Activates the current domain, then releases the old one (see `domain_changed`). Optional body `release_old` (`1`/`0`) overrides the default, which releases only when Nexus counts the new domain. Returns `activated: {domain, is_counted}`, `released: {domain, attempted, removed_remotely, error_code}`, `license`. A failed activation is an error and leaves the old domain's seat alone. Refused with `domain_unchanged` when there is nothing to move. |
 | `install_tier_package` | Needs `install_plugins` too. Fetches the manifest fresh (without `current_version`, so the package comes back even when the version is current); when its `tier_slug` differs from `installed_tier`, installs its package over the plugin with `Plugin_Upgrader`, then clears the cached manifest. Returns `installed`, `installed_tier`, `licensed_tier`, `version`, `plugin_file`. Errors: `file_mods_disabled`, `filesystem_credentials_needed` (never prompts), `installed_tier_unknown`, `licensed_tier_unknown`, `package_unavailable`, `install_failed`, `rate_limited` (while a server-requested wait runs) or Nexus's code. |
-| `check_updates` | Forces a manifest fetch and returns it. |
+| `check_updates` | Forces a manifest fetch and returns it. When the fetch fails, `base_update` carries `error_code` (e.g. `item_slug_required`, `rate_limited`), or null when nothing was asked (no valid license). |
 | `update_feature` | Body: `slug`. Installs the latest version of one licensed module. |
 | `install_features` | Installs **all** licensed modules from the latest manifest. |
 

@@ -410,6 +410,19 @@ class PluginUpdater
     }
 
     /**
+     * The error code of the last failed manifest fetch (e.g. `item_slug_required`,
+     * `rate_limited`, `network_error`), or null when the last fetch worked or none
+     * failed yet. Lets the host say why updates could not be checked.
+     */
+    public function lastFailureCode(): ?string
+    {
+        $failure = get_site_transient($this->failureCacheKey());
+        $code = is_array($failure) ? (string) ($failure['error_code'] ?? '') : '';
+
+        return $code !== '' ? $code : null;
+    }
+
+    /**
      * Forget the cached manifest and any failure backoff — the license changed,
      * so the next check should ask straight away.
      */

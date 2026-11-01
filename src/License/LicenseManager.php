@@ -33,6 +33,9 @@ class LicenseManager
     /** The stored status Nexus sends for a cancelled license; classify() reports it as disabled. */
     private const STATUS_CANCELLED = 'cancelled';
 
+    /** The renewal state Nexus sends when the last renewal charge failed. */
+    private const RENEWAL_PAYMENT_FAILED = 'payment_failed';
+
     private LicenseClient $client;
     private PremiumStore $store;
     private EncryptorInterface $encryptor;
@@ -152,6 +155,42 @@ class LicenseManager
         }
 
         return ['license' => $license, 'released' => $released];
+    }
+
+    /**
+     * Activate the stored key again on this site's current domain: the way back
+     * after the owner removed this site in their account (`not_activated_here`),
+     * without the browser ever needing the key.
+     *
+     * The key is stored as entered on the license page (KeySource::MANUAL), not
+     * with the source it was stored under before: a key once read from a wp-config
+     * constant that has since been deleted must not come back as `constant` and lock
+     * the license page. While a constant or the network admin does manage the key,
+     * this is refused like any manual activation.
+     *
+     * @throws LicenseActionException `not_activated` when no key is stored,
+     *                                `key_unreadable` when it no longer decrypts,
+     *                                `key_from_constant` / `network_managed` when
+     *                                the key is managed elsewhere.
+     * @throws Exception When Nexus refuses the activation.
+     *
+     * @return array<string, mixed> Public-safe license data
+     */
+    public function reactivate(): array
+    {
+        $this->refuseWhenManaged();
+
+        if (! $this->isActivated()) {
+            throw new LicenseActionException(LicenseErrorCode::NOT_ACTIVATED, 'No license key is stored on this site.');
+        }
+
+        $licenseKey = $this->getLicenseKey();
+
+        if ($licenseKey === null) {
+            throw new LicenseActionException(LicenseErrorCode::KEY_UNREADABLE, 'The stored license key can no longer be read. Enter it again.');
+        }
+
+        return $this->activate($licenseKey, KeySource::MANUAL);
     }
 
     /**
@@ -495,8 +534,15 @@ class LicenseManager
      * activation here (`site.active` false) is `not_activated_here` even when every
      * seat is taken; only more activations than seats is over the limit there.
      *
+     * A subscription that renews on its own (`renewal.auto_renews` true, not
+     * cancelled, last charge not failed) is never `expiring_soon`: the card on file
+     * will be charged, so there is nothing for the owner to do.
+     *
      * `days_remaining` is ceil((expires_at - now) / day): null when there is no
      * expiry, <= 0 once expired, otherwise the whole days left.
+     *
+     * To judge another stored license (another site's row, the network's license),
+     * use classifyLicense(); this method calls it for the current row.
      *
      * @return array{code: string, days_remaining: int|null, raw_status: string}
      */
@@ -504,7 +550,39 @@ class LicenseManager
     {
         $data = $this->store->get('license');
 
-        if (empty($data) || empty($data['license_key'])) {
+        if (! empty($data['license_key']) && $this->getLicenseKey() === null) {
+            return [
+                'code' => LicenseErrorCode::KEY_UNREADABLE,
+                'days_remaining' => null,
+                'raw_status' => (string) ($data['status'] ?? ''),
+            ];
+        }
+
+        return self::classifyLicense(is_array($data) ? $data : []);
+    }
+
+    /**
+     * classify() for any stored license section, not only this site's: another
+     * site's row, or the network's license read from a subsite's row. Same
+     * precedence, same shape, same codes, so a host never copies the order.
+     *
+     * It reads only the array it is given: `status`, `error_code`, `expires_at`,
+     * `max_activations`, `activation_count`, `renewal` and, when present, the
+     * site-only `site` block ({active, is_counted}) of the row it came from. Leave
+     * `site` out to judge the license as a whole. It cannot see whether the key
+     * still decrypts, so it never returns `key_unreadable`; classify() checks that
+     * for this site first.
+     *
+     * A section with no `license_key` is `not_activated`.
+     *
+     * @param  array<string, mixed>  $license  A stored license section.
+     * @param  int|null  $now  The time to judge it at (Unix seconds); now when null.
+     *
+     * @return array{code: string, days_remaining: int|null, raw_status: string}
+     */
+    public static function classifyLicense(array $license, ?int $now = null): array
+    {
+        if (empty($license['license_key'])) {
             return [
                 'code' => LicenseErrorCode::NOT_ACTIVATED,
                 'days_remaining' => null,
@@ -512,19 +590,11 @@ class LicenseManager
             ];
         }
 
-        $rawStatus = (string) ($data['status'] ?? '');
-
-        if ($this->getLicenseKey() === null) {
-            return [
-                'code' => LicenseErrorCode::KEY_UNREADABLE,
-                'days_remaining' => null,
-                'raw_status' => $rawStatus,
-            ];
-        }
-
-        $expiresAt = (string) ($data['expires_at'] ?? '');
-        $maxActivations = (int) ($data['max_activations'] ?? 0);
-        $activationCount = (int) ($data['activation_count'] ?? 0);
+        $now = $now ?? time();
+        $rawStatus = (string) ($license['status'] ?? '');
+        $expiresAt = (string) ($license['expires_at'] ?? '');
+        $maxActivations = (int) ($license['max_activations'] ?? 0);
+        $activationCount = (int) ($license['activation_count'] ?? 0);
 
         $daysRemaining = null;
         $expiredByDate = false;
@@ -533,26 +603,57 @@ class LicenseManager
             $expiresTs = strtotime($expiresAt);
 
             if ($expiresTs !== false) {
-                $diff = $expiresTs - time();
+                $diff = $expiresTs - $now;
                 $daysRemaining = (int) ceil($diff / self::SECONDS_PER_DAY);
                 $expiredByDate = $diff <= 0;
             }
         }
 
-        $site = is_array($data['site'] ?? null) ? $data['site'] : [];
+        $site = is_array($license['site'] ?? null) ? $license['site'] : [];
+        $renewal = is_array($license['renewal'] ?? null) ? $license['renewal'] : [];
 
         return [
-            'code' => $this->resolveStateCode($rawStatus, $expiredByDate, $daysRemaining, $this->isOverLimit($maxActivations, $activationCount, $site), ($site['active'] ?? null) === false, (string) ($data['error_code'] ?? '')),
+            'code' => self::resolveStateCode(
+                $rawStatus,
+                $expiredByDate,
+                $daysRemaining,
+                self::isOverLimit($maxActivations, $activationCount, $site),
+                ($site['active'] ?? null) === false,
+                (string) ($license['error_code'] ?? ''),
+                self::renewsItself($renewal)
+            ),
             'days_remaining' => $daysRemaining,
             'raw_status' => $rawStatus,
         ];
     }
 
     /**
+     * Whether Nexus's renewal block says the subscription will renew without the
+     * owner: `auto_renews` true (a card to charge), not cancelled (neither
+     * `subscription_status: cancelled` nor `cancel_at_period_end`), and the last
+     * charge did not fail (`state: payment_failed`). Such a license is not about
+     * to end, so it is not `expiring_soon`.
+     *
+     * @param  array<string, mixed>  $renewal
+     */
+    private static function renewsItself(array $renewal): bool
+    {
+        if (($renewal['auto_renews'] ?? false) !== true) {
+            return false;
+        }
+
+        if (($renewal['subscription_status'] ?? '') === self::STATUS_CANCELLED || ! empty($renewal['cancel_at_period_end'])) {
+            return false;
+        }
+
+        return ($renewal['state'] ?? '') !== self::RENEWAL_PAYMENT_FAILED;
+    }
+
+    /**
      * Apply notice precedence to the stored license signals and return the
      * single winning state code.
      */
-    private function resolveStateCode(string $rawStatus, bool $expiredByDate, ?int $daysRemaining, bool $overLimit, bool $notActivatedHere = false, string $errorCode = ''): string
+    private static function resolveStateCode(string $rawStatus, bool $expiredByDate, ?int $daysRemaining, bool $overLimit, bool $notActivatedHere = false, string $errorCode = '', bool $renewsItself = false): string
     {
         // 1. Account-level holds — different action (contact support), so they
         //    outrank everything else.
@@ -587,8 +688,9 @@ class LicenseManager
             return LicenseErrorCode::NOT_ACTIVATED_HERE;
         }
 
-        // 5. Approaching expiry.
-        if ($daysRemaining !== null && $daysRemaining > 0 && $daysRemaining <= self::EXPIRY_WARNING_DAYS) {
+        // 5. Approaching expiry — unless the subscription renews on its own, when
+        //    there is nothing for the owner to do.
+        if (! $renewsItself && $daysRemaining !== null && $daysRemaining > 0 && $daysRemaining <= self::EXPIRY_WARNING_DAYS) {
             return LicenseErrorCode::EXPIRING_SOON;
         }
 
@@ -606,7 +708,7 @@ class LicenseManager
      *
      * @param  array<string, mixed>  $site  Nexus's `site` block ({active, is_counted}), or empty.
      */
-    private function isOverLimit(int $maxActivations, int $activationCount, array $site): bool
+    private static function isOverLimit(int $maxActivations, int $activationCount, array $site): bool
     {
         if ($maxActivations <= 0) {
             return false;
@@ -758,7 +860,32 @@ class LicenseManager
      */
     public function getRenewal(): ?array
     {
-        return $this->store->get('license')['renewal'] ?? null;
+        return self::withoutExpiredOffer($this->store->get('license')['renewal'] ?? null, time());
+    }
+
+    /**
+     * The renewal block without its `offer` once the coupon's own `expires_at` has
+     * passed, so a coupon carried forward from an older answer is never shown after
+     * it stops working. An offer with no (or an unreadable) date is kept; so is the
+     * rest of the block.
+     *
+     * @param  mixed  $renewal
+     * @return array<string, mixed>|null
+     */
+    private static function withoutExpiredOffer($renewal, int $now): ?array
+    {
+        if (! is_array($renewal)) {
+            return null;
+        }
+
+        $expiresAt = is_array($renewal['offer'] ?? null) ? (string) ($renewal['offer']['expires_at'] ?? '') : '';
+        $expiresTs = $expiresAt !== '' ? strtotime($expiresAt) : false;
+
+        if ($expiresTs !== false && $expiresTs <= $now) {
+            $renewal['offer'] = null;
+        }
+
+        return $renewal;
     }
 
     public function hasFeature(string $slug): bool
@@ -831,8 +958,10 @@ class LicenseManager
 
         // The renewal offer block (state, renew_url with coupon pre-applied,
         // discount offer). Rides the validate-success response; fall back to the
-        // cached value so a refresh that omits it preserves a still-valid coupon.
-        $renewal = $license['renewal'] ?? $response['renewal'] ?? ($existing['renewal'] ?? null);
+        // cached value so a refresh that omits it preserves a still-valid coupon —
+        // but not one past its own `offer.expires_at`.
+        $now = time();
+        $renewal = self::withoutExpiredOffer($license['renewal'] ?? $response['renewal'] ?? ($existing['renewal'] ?? null), $now);
 
         // License-page details (Nexus 2026-10+). Older servers send none of these,
         // and Nexus sends `sites` and `buyer` as null unless the request's domain
@@ -841,7 +970,6 @@ class LicenseManager
         $buyer = $this->mapBuyer($license['buyer'] ?? $response['buyer'] ?? null) ?? ($existing['buyer'] ?? null);
         $sitesRaw = $license['sites'] ?? $response['sites'] ?? null;
         $siteRaw = $license['site'] ?? $response['site'] ?? null;
-        $now = time();
 
         return [
             'license_key' => $this->encryptor->encrypt($licenseKey),
@@ -1164,6 +1292,10 @@ class LicenseManager
         }
 
         unset($data['license_key']);
+
+        if (array_key_exists('renewal', $data)) {
+            $data['renewal'] = self::withoutExpiredOffer($data['renewal'], time());
+        }
 
         return $data;
     }
