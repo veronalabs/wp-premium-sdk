@@ -50,6 +50,8 @@ Returned on `activate` / `validate` / `deactivate` failures, as
 | `wrong_product`            | The key exists but belongs to a different product.          | 403            | This license key is for a different product. |
 | `license_expired`          | The key is expired (rejected during an action).             | 403            | This license has expired. |
 | `license_suspended`        | The key is suspended (e.g. billing problem).                | 403            | This license is suspended. |
+| `item_slug_required`       | Update manifest: the license covers several items (a bundle) and the request named none with `item_slug`. Carries `covers` and `items`. The SDK also uses it for the same 400 with no code from a Nexus before veronalabs/nexus#1332 (message "… name one with item_slug"). Set ClientConfig `item_slug`. | 400 | This license covers several plugins. Update the plugin to get updates. |
+| `item_not_covered`         | Update manifest: the request's `item_slug` is not one the license covers. Carries `covers`. The SDK also uses it for the same 403 with no code ("This license does not cover …"). | 403 | This license does not include this plugin. |
 | `rate_limited`             | Too many requests from this caller. The SDK also uses it for any 429 without a code, and passes `Retry-After` on as `retry_after` (seconds). | 429 | Too many requests. Please try again shortly. |
 | `token_expired`            | An account (api/v1) access token has expired.               | 401            | (handled by the SDK — see `account_expired`) |
 | `server_error`             | Nexus hit an internal error. The SDK also uses it for any 5xx without a code, including an HTML error page. | 500 | The licensing server had a problem. Please try again. |
@@ -123,7 +125,7 @@ expiry/activation fields.
 | state code      | Meaning                                          | Plugin CTA |
 |-----------------|--------------------------------------------------|------------|
 | `active`        | Valid and within its window.                     | none |
-| `expiring_soon` | Active, expires within 14 days (+ `days_remaining`). | Renew now |
+| `expiring_soon` | Active, expires within 14 days (+ `days_remaining`), and the subscription does not renew on its own (`renewal.auto_renews` false, cancelled, or `renewal.state: payment_failed`). | Renew now |
 | `expired`       | Past expiry, or `status: expired`.               | Renew |
 | `suspended`     | `status: suspended`.                             | Contact support |
 | `revoked`       | `status: revoked`.                               | Contact support |
@@ -176,6 +178,11 @@ days_remaining = ceil((strtotime(expires_at) - time()) / 86400)
 ```
 
 An empty `expires_at` is a **lifetime** license: never `expiring_soon`/`expired`.
+
+A subscription that renews on its own is never `expiring_soon` either: the stored
+`renewal.auto_renews` is true, `renewal.subscription_status` is not `cancelled`,
+`renewal.cancel_at_period_end` is not true, and `renewal.state` is not
+`payment_failed`. Past its date it is still `expired`.
 
 ---
 

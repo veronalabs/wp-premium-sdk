@@ -274,6 +274,96 @@ class LicenseEndpointsTest extends TestCase
     }
 
     /**
+     * #56: "Activate on this site" after the owner removed it in their account,
+     * with the stored key — the browser sends none.
+     */
+    public function test_reactivate_activates_the_stored_key_here(): void
+    {
+        $this->activate();
+        WpStub::queueJson(403, ['success' => false, 'error_code' => 'domain_not_allowed']);
+        $this->manager->validate();
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, $this->manager->classify()['code']);
+        $calls = count(WpStub::$requestLog);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active', 'site' => ['active' => true, 'is_counted' => true]]]);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active', 'site' => ['active' => true, 'is_counted' => true]]]);
+
+        $response = $this->call('reactivate');
+
+        $this->assertTrue($response['success']);
+        $this->assertArrayNotHasKey('license_key', $response['data']['license']);
+        $activate = WpStub::$requestLog[$calls];
+        $this->assertStringContainsString('/api/v1/license/activate', $activate['url']);
+        $body = json_decode($activate['args']['body'], true);
+        $this->assertSame('KEY-001', $body['license_key']);
+        $this->assertSame('example.com', $body['domain']);
+        $this->assertSame(LicenseErrorCode::ACTIVE, $this->manager->classify()['code']);
+    }
+
+    /**
+     * A key once read from a wp-config constant that has since been removed comes
+     * back as entered here, so the license page does not lock itself.
+     */
+    public function test_reactivate_does_not_store_a_stale_constant_source(): void
+    {
+        $this->activate();
+        $this->manager->setSource(KeySource::CONSTANT);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active']]);
+
+        $this->assertTrue($this->call('reactivate')['success']);
+        $this->assertSame(KeySource::MANUAL, $this->manager->getSource());
+    }
+
+    public function test_reactivate_with_an_unreadable_key_asks_for_it_again(): void
+    {
+        $this->activate();
+        $data = $this->store->get('license');
+        $data['license_key'] = 'not-a-ciphertext';
+        $this->store->set('license', $data);
+        $calls = count(WpStub::$requestLog);
+
+        $response = $this->call('reactivate');
+
+        $this->assertFalse($response['success']);
+        $this->assertSame(LicenseErrorCode::KEY_UNREADABLE, $response['data']['code']);
+        $this->assertCount($calls, WpStub::$requestLog);
+    }
+
+    public function test_reactivate_without_a_stored_key_is_not_activated(): void
+    {
+        $response = $this->call('reactivate');
+
+        $this->assertFalse($response['success']);
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED, $response['data']['code']);
+        $this->assertSame([], WpStub::$requestLog);
+    }
+
+    public function test_reactivate_passes_a_nexus_refusal_through(): void
+    {
+        $this->activate();
+        WpStub::queueJson(409, ['success' => false, 'error_code' => 'activation_limit_reached', 'message' => 'No seats left.']);
+
+        $response = $this->call('reactivate');
+
+        $this->assertFalse($response['success']);
+        $this->assertSame(LicenseErrorCode::ACTIVATION_LIMIT_REACHED, $response['data']['code']);
+    }
+
+    /**
+     * #58: check_updates says why the manifest could not be fetched.
+     */
+    public function test_check_updates_reports_why_the_manifest_failed(): void
+    {
+        $this->activate();
+        WpStub::queueJson(400, ['success' => false, 'error' => 'This license covers several plugins — name one with item_slug']);
+
+        $response = $this->call('check_updates');
+
+        $this->assertFalse($response['data']['base_update']['success']);
+        $this->assertSame(LicenseErrorCode::ITEM_SLUG_REQUIRED, $response['data']['base_update']['error_code']);
+    }
+
+    /**
      * @param  array<string, mixed>  $license
      */
     private function activate(array $license = []): void

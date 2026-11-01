@@ -90,6 +90,11 @@ class LicenseClient
      * license, as activate and validate do: this site's domain unless `$domain`
      * names another (a network-wide update check sends the main site's).
      *
+     * `item_slug` (ClientConfig) names the store item asking, so a bundle license
+     * knows which package to answer with. A bundle refusal without it is reported
+     * as `item_slug_required`, and one for an item the license does not cover as
+     * `item_not_covered`, also from a Nexus that sends no code for them yet.
+     *
      * @throws Exception
      */
     public function fetchManifest(string $licenseKey, ?string $currentVersion = null, ?string $domain = null): array
@@ -107,7 +112,7 @@ class LicenseClient
                 throw new ApiException($e->getMessage(), LicenseErrorCode::MANIFEST_AUTH_MISSING, $e->getData(), 401, $e, $e->getRetryAfter());
             }
 
-            throw $e;
+            throw $this->withItemRefusalCode($e);
         }
     }
 
@@ -120,16 +125,48 @@ class LicenseClient
     {
         $query = $this->manifestQuery($currentVersion, $domain);
 
-        return $this->http->get(
-            '/api/v1/'.$this->config->productSlug().'/update/manifest',
-            $query,
-            ['Authorization' => 'Bearer '.$accessToken]
-        );
+        try {
+            return $this->http->get(
+                '/api/v1/'.$this->config->productSlug().'/update/manifest',
+                $query,
+                ['Authorization' => 'Bearer '.$accessToken]
+            );
+        } catch (ApiException $e) {
+            throw $this->withItemRefusalCode($e);
+        }
     }
 
     /**
-     * The manifest query: `current_version` when given, and `domain` (this site's
-     * unless another is named). A blank domain is left out.
+     * Give the manifest's "which item?" refusals a code when Nexus sent none.
+     * Nexus before veronalabs/nexus#1332 answers a bundle license asked without
+     * `item_slug` with a bare 400 ("… name one with item_slug" / "… name a plugin
+     * with item_slug"), and an item the license does not cover with a bare 403
+     * ("This license does not cover …"). Anything else, and any reply that has a
+     * code, is returned unchanged.
+     */
+    private function withItemRefusalCode(ApiException $e): ApiException
+    {
+        if ($e->getErrorCode() !== LicenseErrorCode::UNKNOWN) {
+            return $e;
+        }
+
+        $error = (string) ($e->getData()['error'] ?? $e->getData()['message'] ?? '');
+        $code = null;
+
+        if ($e->getHttpStatus() === 400 && stripos($error, 'with item_slug') !== false) {
+            $code = LicenseErrorCode::ITEM_SLUG_REQUIRED;
+        } elseif ($e->getHttpStatus() === 403 && stripos($error, 'does not cover') !== false) {
+            $code = LicenseErrorCode::ITEM_NOT_COVERED;
+        }
+
+        return $code === null ? $e : new ApiException($e->getMessage(), $code, $e->getData(), $e->getHttpStatus(), $e, $e->getRetryAfter());
+    }
+
+    /**
+     * The manifest query: `current_version` when given, `domain` (this site's
+     * unless another is named), and `item_slug` when the plugin names its item. A
+     * blank domain or item is left out, so a host that sets no `item_slug` sends
+     * the same request as before.
      *
      * @return array<string, string>
      */
@@ -145,6 +182,10 @@ class LicenseClient
 
         if ($domain !== '') {
             $query['domain'] = $domain;
+        }
+
+        if ($this->config->itemSlug() !== '') {
+            $query['item_slug'] = $this->config->itemSlug();
         }
 
         return $query;

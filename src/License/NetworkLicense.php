@@ -220,20 +220,13 @@ class NetworkLicense
         $subsites = $subsites ?? $this->subsites();
         $active = 0;
         $ownKey = 0;
-        $freshest = null;
+        $freshest = $this->freshestLicense($subsites);
 
         foreach ($subsites as $subsite) {
             if ($subsite['holds_seat']) {
                 $active++;
             } elseif ($subsite['has_own_key']) {
                 $ownKey++;
-            }
-
-            $license = $subsite['license'];
-
-            if (self::isNetworkLicense($license)
-                && ($freshest === null || (int) ($license['last_success_at'] ?? 0) > (int) ($freshest['last_success_at'] ?? 0))) {
-                $freshest = $license;
             }
         }
 
@@ -248,6 +241,34 @@ class NetworkLicense
             'seats_max' => $max,
             'seats_left' => $left,
         ];
+    }
+
+    /**
+     * The network's license as Nexus last described it: the stored license section
+     * of the subsite that heard from Nexus most recently with the network's key (or
+     * the wp-config constant's), or null when no subsite holds one. The network key's
+     * own row holds only the key, so this is where the license lives. The section
+     * still carries that subsite's encrypted key and its own `site` block; pass it to
+     * LicenseManager::classifyLicense() (without `site` to judge the license as a
+     * whole) for its state.
+     *
+     * @param  array<int, array<string, mixed>>|null  $subsites  subsites(), when already read.
+     * @return array<string, mixed>|null
+     */
+    public function freshestLicense(?array $subsites = null): ?array
+    {
+        $freshest = null;
+
+        foreach ($subsites ?? $this->subsites() as $subsite) {
+            $license = $subsite['license'];
+
+            if (self::isNetworkLicense($license)
+                && ($freshest === null || (int) ($license['last_success_at'] ?? 0) > (int) ($freshest['last_success_at'] ?? 0))) {
+                $freshest = $license;
+            }
+        }
+
+        return $freshest;
     }
 
     /**

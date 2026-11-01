@@ -5,7 +5,9 @@ namespace VeronaLabs\WpPremiumSdk\Tests\Unit\License;
 use PHPUnit\Framework\TestCase;
 use VeronaLabs\WpPremiumSdk\Config\ClientConfig;
 use VeronaLabs\WpPremiumSdk\Http\ApiClient;
+use VeronaLabs\WpPremiumSdk\Http\ApiException;
 use VeronaLabs\WpPremiumSdk\License\LicenseClient;
+use VeronaLabs\WpPremiumSdk\License\LicenseErrorCode;
 use VeronaLabs\WpPremiumSdk\Tests\WpStub;
 
 class LicenseClientTest extends TestCase
@@ -143,5 +145,98 @@ class LicenseClientTest extends TestCase
         $this->client->fetchManifest('KEY-001');
 
         $this->assertStringNotContainsString('current_version', WpStub::$requestLog[0]['url']);
+    }
+
+    /**
+     * #58: a plugin that names its item sends it, so a bundle license knows which
+     * package to answer with.
+     */
+    public function test_fetch_manifest_sends_the_configured_item_slug(): void
+    {
+        $client = $this->clientWith(['item_slug' => 'wsms']);
+        WpStub::queueJson(200, ['update_available' => false]);
+        WpStub::queueJson(200, ['update_available' => false]);
+
+        $client->fetchManifest('KEY-001', '8.0.0');
+        $client->fetchManifestWithToken('tok_xyz');
+
+        foreach (WpStub::$requestLog as $call) {
+            parse_str((string) parse_url($call['url'], PHP_URL_QUERY), $query);
+            $this->assertSame('wsms', $query['item_slug']);
+        }
+    }
+
+    public function test_fetch_manifest_sends_no_item_slug_unless_configured(): void
+    {
+        WpStub::queueJson(200, ['update_available' => false]);
+
+        $this->client->fetchManifest('KEY-001', '7.9.0');
+
+        $this->assertStringNotContainsString('item_slug', WpStub::$requestLog[0]['url']);
+    }
+
+    /**
+     * #58: the bundle refusal from a Nexus that sends no code yet.
+     */
+    public function test_a_bundle_refusal_without_a_code_is_item_slug_required(): void
+    {
+        WpStub::queueJson(400, ['success' => false, 'error' => 'This license covers several plugins — name one with item_slug', 'covers' => ['wp-sms-pro', 'wp-sms-woocommerce-pro']]);
+
+        $e = $this->manifestFailure();
+
+        $this->assertSame(LicenseErrorCode::ITEM_SLUG_REQUIRED, $e->getErrorCode());
+        $this->assertSame(400, $e->getHttpStatus());
+        $this->assertSame(['wp-sms-pro', 'wp-sms-woocommerce-pro'], $e->getData()['covers']);
+        $this->assertFalse($e->isTransient());
+    }
+
+    public function test_a_bundle_refusal_with_a_code_keeps_it(): void
+    {
+        WpStub::queueJson(400, ['success' => false, 'error' => 'This license covers several plugins — name one with item_slug', 'error_code' => 'item_slug_required']);
+
+        $this->assertSame(LicenseErrorCode::ITEM_SLUG_REQUIRED, $this->manifestFailure()->getErrorCode());
+    }
+
+    public function test_an_uncovered_item_without_a_code_is_item_not_covered(): void
+    {
+        WpStub::queueJson(403, ['success' => false, 'error' => 'This license does not cover wsms', 'covers' => ['wp-sms-pro']]);
+
+        $this->assertSame(LicenseErrorCode::ITEM_NOT_COVERED, $this->manifestFailure()->getErrorCode());
+    }
+
+    public function test_another_bare_400_stays_unknown(): void
+    {
+        WpStub::queueJson(400, ['success' => false, 'error' => 'Something else']);
+
+        $this->assertSame(LicenseErrorCode::UNKNOWN, $this->manifestFailure()->getErrorCode());
+    }
+
+    private function manifestFailure(): ApiException
+    {
+        try {
+            $this->client->fetchManifest('KEY-001', '8.0.0');
+        } catch (ApiException $e) {
+            return $e;
+        }
+
+        $this->fail('Expected an ApiException.');
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     */
+    private function clientWith(array $overrides): LicenseClient
+    {
+        $config = new ClientConfig($overrides + [
+            'product_slug' => 'wsms',
+            'option_key' => 'wsms_premium',
+            'oauth_state_prefix' => 'x_',
+            'oauth_callback_params' => ['code' => 'c', 'state' => 's'],
+            'api_base_url' => 'https://nexus.test',
+            'text_domain' => 'td',
+            'current_version' => '8.0.0',
+        ]);
+
+        return new LicenseClient($config, new ApiClient($config));
     }
 }

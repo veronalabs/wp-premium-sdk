@@ -273,6 +273,105 @@ class LicenseClassifyTest extends TestCase
         $this->assertSame(LicenseErrorCode::ACTIVE, $this->manager->classify()['code']);
     }
 
+    /**
+     * #55: a subscription that renews itself is not about to end.
+     */
+    public function test_an_auto_renewing_subscription_is_not_expiring_soon(): void
+    {
+        $this->seed(['status' => 'active', 'expires_at' => $this->inDays(5), 'renewal' => ['auto_renews' => true, 'subscription_status' => 'active', 'state' => 'expiring_soon']]);
+
+        $result = $this->manager->classify();
+
+        $this->assertSame(LicenseErrorCode::ACTIVE, $result['code']);
+        $this->assertSame(5, $result['days_remaining']);
+    }
+
+    /**
+     * #55: a cancelled subscription, a failed charge or no card still warns.
+     *
+     * @dataProvider stillEndingRenewalProvider
+     *
+     * @param  array<string, mixed>  $renewal
+     */
+    public function test_a_subscription_that_will_not_renew_itself_is_still_expiring_soon(array $renewal): void
+    {
+        $this->seed(['status' => 'active', 'expires_at' => $this->inDays(5), 'renewal' => $renewal]);
+
+        $this->assertSame(LicenseErrorCode::EXPIRING_SOON, $this->manager->classify()['code']);
+    }
+
+    /**
+     * @return array<string, array{0: array<string, mixed>}>
+     */
+    public static function stillEndingRenewalProvider(): array
+    {
+        return [
+            'no card' => [['auto_renews' => false, 'subscription_status' => 'active']],
+            'cancelled' => [['auto_renews' => true, 'subscription_status' => 'cancelled']],
+            'cancelling at period end' => [['auto_renews' => true, 'subscription_status' => 'active', 'cancel_at_period_end' => true]],
+            'charge failed' => [['auto_renews' => true, 'subscription_status' => 'past_due', 'state' => 'payment_failed']],
+        ];
+    }
+
+    public function test_auto_renewal_does_not_hide_an_expired_license(): void
+    {
+        $this->seed(['status' => 'active', 'expires_at' => $this->inDays(-1), 'renewal' => ['auto_renews' => true, 'subscription_status' => 'active']]);
+
+        $this->assertSame(LicenseErrorCode::EXPIRED, $this->manager->classify()['code']);
+    }
+
+    /**
+     * #52: classifyLicense() judges any stored section, with the same answer as
+     * classify() for this site's row.
+     */
+    public function test_classify_license_matches_classify_for_the_current_row(): void
+    {
+        $this->seed(['status' => 'active', 'expires_at' => $this->inDays(10), 'max_activations' => 3, 'activation_count' => 3]);
+
+        $this->assertSame($this->manager->classify(), LicenseManager::classifyLicense($this->store->get('license')));
+    }
+
+    public function test_classify_license_judges_at_the_given_time(): void
+    {
+        $license = ['license_key' => 'enc', 'status' => 'active', 'expires_at' => gmdate('c', 1800000000)];
+
+        $this->assertSame(['code' => LicenseErrorCode::EXPIRING_SOON, 'days_remaining' => 10, 'raw_status' => 'active'], LicenseManager::classifyLicense($license, 1800000000 - 10 * 86400));
+        $this->assertSame(LicenseErrorCode::ACTIVE, LicenseManager::classifyLicense($license, 1800000000 - 30 * 86400)['code']);
+        $this->assertSame(LicenseErrorCode::EXPIRED, LicenseManager::classifyLicense($license, 1800000000)['code']);
+    }
+
+    public function test_classify_license_without_a_key_is_not_activated(): void
+    {
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED, LicenseManager::classifyLicense(['status' => 'active'])['code']);
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED, LicenseManager::classifyLicense([])['code']);
+    }
+
+    /**
+     * The `site` block is the row's own site; without it the license is judged as a
+     * whole, which is how a host classifies the network's license.
+     */
+    public function test_classify_license_reads_the_site_block_only_when_given(): void
+    {
+        $license = ['license_key' => 'enc', 'status' => 'active', 'max_activations' => 1, 'activation_count' => 1, 'site' => ['active' => false]];
+
+        $this->assertSame(LicenseErrorCode::NOT_ACTIVATED_HERE, LicenseManager::classifyLicense($license)['code']);
+
+        unset($license['site']);
+
+        $this->assertSame(LicenseErrorCode::ACTIVE, LicenseManager::classifyLicense($license)['code']);
+    }
+
+    public function test_classify_license_never_reports_key_unreadable(): void
+    {
+        $this->seed(['status' => 'active']);
+        $data = $this->store->get('license');
+        $data['license_key'] = 'not-a-ciphertext';
+        $this->store->set('license', $data);
+
+        $this->assertSame(LicenseErrorCode::KEY_UNREADABLE, $this->manager->classify()['code']);
+        $this->assertSame(LicenseErrorCode::ACTIVE, LicenseManager::classifyLicense($data)['code']);
+    }
+
     public function test_unrecognized_status_falls_through_to_invalid(): void
     {
         $this->seed(['status' => 'frozen', 'expires_at' => $this->inDays(30)]);

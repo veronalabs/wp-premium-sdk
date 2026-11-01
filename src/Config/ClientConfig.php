@@ -31,6 +31,7 @@ final class ClientConfig
      *     nonce_param?: string,
      *     license_key_constant?: string,
      *     installed_tier?: string,
+     *     item_slug?: string,
      * } $data
      */
     public function __construct(array $data)
@@ -51,6 +52,7 @@ final class ClientConfig
         $data['nonce_param'] = $data['nonce_param'] ?? 'nonce';
         $data['license_key_constant'] = (string) ($data['license_key_constant'] ?? '');
         $data['installed_tier'] = (string) ($data['installed_tier'] ?? '');
+        $data['item_slug'] = trim((string) ($data['item_slug'] ?? ''));
 
         $this->data = $data;
     }
@@ -147,5 +149,16 @@ final class ClientConfig
     public function installedTier(): string
     {
         return $this->data['installed_tier'];
+    }
+
+    /**
+     * The store item this plugin is (e.g. "wp-sms-pro"), or '' when the plugin does
+     * not say. Sent as `item_slug` with the update manifest request, so a license
+     * that covers several items (a bundle) knows which one is asking; without it
+     * such a license is refused with `item_slug_required`.
+     */
+    public function itemSlug(): string
+    {
+        return $this->data['item_slug'];
     }
 }

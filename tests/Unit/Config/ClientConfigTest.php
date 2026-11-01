@@ -42,6 +42,12 @@ class ClientConfigTest extends TestCase
         $this->assertSame('', $config->modulesPath());
     }
 
+    public function test_item_slug_defaults_to_empty_and_is_trimmed(): void
+    {
+        $this->assertSame('', $this->makeConfig()->itemSlug());
+        $this->assertSame('wsms', $this->makeConfig(['item_slug' => ' wsms '])->itemSlug());
+    }
+
     public function test_trims_trailing_slash_from_api_base_url(): void
     {
         $config = $this->makeConfig(['api_base_url' => 'https://nexus.test/']);

@@ -14,12 +14,12 @@ use VeronaLabs\WpPremiumSdk\Update\TierPackageInstaller;
  * AJAX dispatcher for license + update actions.
  *
  * Action: wp_ajax_{prefix}_license
- * Sub-actions: activate, deactivate, get_status, check_updates,
+ * Sub-actions: activate, reactivate, deactivate, get_status, check_updates,
  *              update_feature, install_features, list_sites, remove_site,
  *              move_license, install_tier_package
  *
  * When a wp-config constant or the network admin manages the key, this site's
- * license page can view it but not change it: activate and deactivate answer
+ * license page can view it but not change it: activate, reactivate and deactivate answer
  * `key_from_constant` / `network_managed`, and on a network-managed subsite so do
  * remove_site and move_license.
  */
@@ -59,6 +59,7 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
     {
         return [
             'activate' => 'activate',
+            'reactivate' => 'reactivate',
             'deactivate' => 'deactivate',
             'get_status' => 'getStatus',
             'check_updates' => 'checkUpdates',
@@ -98,6 +99,26 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
         $this->updater->flush();
 
         $this->successResponse(['license' => $result['license'], 'released' => $result['released']]);
+    }
+
+    /**
+     * Activate the stored key again on this site's current domain, for "Activate on
+     * this site" after the owner removed the site in their account
+     * (`not_activated_here`). The browser sends no key; the stored one is used and
+     * stored again as entered here (`manual`).
+     *
+     * @throws Exception `key_from_constant` / `network_managed` when the key is
+     *                   managed elsewhere, `not_activated` when none is stored,
+     *                   `key_unreadable` when it no longer decrypts, or Nexus's code.
+     */
+    protected function reactivate(): void
+    {
+        $this->refuseWhenManaged();
+
+        $license = $this->manager->reactivate();
+        $this->updater->flush();
+
+        $this->successResponse(['license' => $license]);
     }
 
     protected function deactivate(): void
@@ -307,6 +328,9 @@ class LicenseEndpoints extends AbstractAjaxEndpoint
                 'success' => false,
                 'update_available' => false,
                 'error' => __('Failed to fetch update manifest.', $this->config->textDomain()),
+                // Why, for the host's message table (e.g. `item_slug_required`), or
+                // null when no request failed (e.g. no valid license to ask with).
+                'error_code' => $this->updater->lastFailureCode(),
             ];
         } else {
             if (! empty($manifest['update_available'])) {

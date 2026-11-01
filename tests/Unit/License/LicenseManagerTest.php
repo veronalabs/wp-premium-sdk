@@ -176,6 +176,40 @@ class LicenseManagerTest extends TestCase
         $this->assertSame($renewal, $this->manager->getRenewal(), 'A refresh that omits renewal must keep the cached coupon.');
     }
 
+    /**
+     * #57: a coupon carried forward past its own expires_at is dropped.
+     */
+    public function test_refresh_drops_a_carried_forward_offer_past_its_expiry(): void
+    {
+        $renewal = [
+            'subscription_status' => 'active',
+            'state' => 'expiring_soon',
+            'renew_url' => 'https://nexus.test/checkout?coupon=RENEW-1',
+            'offer' => ['code' => 'RENEW-1', 'discount_type' => 'percentage', 'discount_value' => 20, 'expires_at' => gmdate('c', time() + 3600)],
+        ];
+        $license = ['status' => 'active', 'features' => [], 'expires_at' => '2027-01-01T00:00:00+00:00', 'renewal' => $renewal];
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // activate
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]); // validate
+        $this->manager->activate('KEY-001');
+
+        $this->assertSame('RENEW-1', $this->manager->getRenewal()['offer']['code'], 'A coupon still running is kept.');
+
+        // The coupon runs out; the stored copy still holds it.
+        $stored = $this->store->get('license');
+        $stored['renewal']['offer']['expires_at'] = gmdate('c', time() - 60);
+        $this->store->set('license', $stored);
+
+        $this->assertNull($this->manager->getRenewal()['offer'], 'getRenewal() does not hand out a run-out coupon.');
+        $this->assertNull($this->manager->getLicenseData()['renewal']['offer']);
+
+        WpStub::queueJson(200, ['success' => true, 'license' => ['status' => 'active', 'expires_at' => '2027-01-01T00:00:00+00:00']]);
+        $this->manager->refreshStatus();
+
+        $stored = $this->store->get('license')['renewal'];
+        $this->assertNull($stored['offer'], 'The refresh does not store it again.');
+        $this->assertSame('expiring_soon', $stored['state'], 'The rest of the block is kept.');
+    }
+
     public function test_get_license_data_exposes_masked_key_not_raw(): void
     {
         $this->activateWith('2027-01-01T00:00:00+00:00');
