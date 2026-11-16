@@ -68,7 +68,7 @@ class AccountClient
      */
     public function licenses(string $accessToken): array
     {
-        $response = $this->http->get('/api/v1/account/licenses', [], [
+        $response = $this->http->get('/api/v1/account/licenses', ['product_slug' => $this->config->productSlug()], [
             'Authorization' => 'Bearer '.$accessToken,
         ]);
 

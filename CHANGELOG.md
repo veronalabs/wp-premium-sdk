@@ -6,8 +6,16 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `account/licenses` now sends `product_slug`, so Nexus can resolve the store instead of answering 422 `store_required`.
+- `docs/nexus-license-error-codes.md` states the HTTP statuses Nexus really sends (`invalid_key` 404, `activation_limit_reached` 403) and lists every code above.
+
 ### Added
 
+- `LicenseErrorCode` names the codes Nexus sends that it had no name for: `nothing_to_update`, `product_not_found`, `store_required`, `store_mismatch`, `store_forbidden`, `exchange_code_invalid`, `exchange_code_wrong_product`, `license_not_found`, `domain_not_activated`, `no_release`, `plugin_not_found`.
+- A successful license reply stores its `support_url` beside `manage_url` and `upgrade_url`.
+- A failed license or account action now forwards the `support_url` Nexus attaches to a refusal (`invalid_key`, `wrong_product`, `domain_not_allowed`, a stopped license) next to the `renewal` block, so a host can offer Contact support. It is forwarded as Nexus sends it.
 - `PremiumServiceProvider::uninstall(bool $releaseSeat = true)` for the host's `uninstall.php`: releases this site's seat on Nexus (best-effort, 5-second timeout, never throws), then deletes the option row, the `{option_key}_cipher` fallback key and the manifest cache transients. The SDK still registers no activation, deactivation or uninstall hooks.
 - `get_status` returns `state`, the `LicenseManager::classify()` result. (#13)
 - License sub-actions `list_sites` and `remove_site`, working on the license key: list the sites on the license (fetched fresh with this site's domain, each flagged `this_site`) and release another site's seat. This site is refused with code `this_site`. (#14)

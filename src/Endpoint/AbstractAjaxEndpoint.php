@@ -89,6 +89,13 @@ abstract class AbstractAjaxEndpoint
             if (is_array($renewal)) {
                 $extra['renewal'] = $renewal;
             }
+            // The store's own support link, which Nexus attaches to a refusal,
+            // so the UI can offer "Contact support". Forwarded as sent, like
+            // the renewal block.
+            $support = $e->getData()['support_url'] ?? null;
+            if ($support !== null) {
+                $extra['support_url'] = $support;
+            }
             // How long the server asked us to wait, so the UI can say when to retry.
             if ($e->getRetryAfter() !== null) {
                 $extra['retry_after'] = $e->getRetryAfter();

@@ -109,6 +109,45 @@ final class LicenseErrorCode
      */
     public const ITEM_NOT_COVERED = 'item_not_covered';
 
+    /**
+     * Nexus's own `not_activated` (a deactivate 404): this domain holds no seat on the
+     * license. It is the same word as NOT_ACTIVATED, which the SDK raises for "no key is
+     * stored on this site"; the values are a stable contract, so read the context.
+     */
+
+    /** The update manifest: the license names nothing that receives updates. */
+    public const NOTHING_TO_UPDATE = 'nothing_to_update';
+
+    /** The update manifest or a download: no store at the address asked. */
+    public const PRODUCT_NOT_FOUND = 'product_not_found';
+
+    /** An account route needs a store and none was named (send `product_slug`). */
+    public const STORE_REQUIRED = 'store_required';
+
+    /** The account's token belongs to another store than the one named. */
+    public const STORE_MISMATCH = 'store_mismatch';
+
+    /** The account may not use the store named. */
+    public const STORE_FORBIDDEN = 'store_forbidden';
+
+    /** The sign-in exchange code is unknown, used or expired. */
+    public const EXCHANGE_CODE_INVALID = 'exchange_code_invalid';
+
+    /** The sign-in exchange code was issued for another product. */
+    public const EXCHANGE_CODE_WRONG_PRODUCT = 'exchange_code_wrong_product';
+
+    /** A download: no license with that id. */
+    public const LICENSE_NOT_FOUND = 'license_not_found';
+
+    /** A download: the license holds no activation for this domain. */
+    public const DOMAIN_NOT_ACTIVATED = 'domain_not_activated';
+
+    /** A download: the product has no release to give. */
+    public const NO_RELEASE = 'no_release';
+
+    /** A download: no plugin with that slug. */
+    public const PLUGIN_NOT_FOUND = 'plugin_not_found';
+
     /** Nexus encountered an internal error. */
     public const SERVER_ERROR = 'server_error';
 
@@ -234,6 +273,17 @@ final class LicenseErrorCode
             self::PACKAGE_UNAVAILABLE,
             self::INSTALL_FAILED,
             self::MANIFEST_AUTH_MISSING,
+            self::NOTHING_TO_UPDATE,
+            self::PRODUCT_NOT_FOUND,
+            self::STORE_REQUIRED,
+            self::STORE_MISMATCH,
+            self::STORE_FORBIDDEN,
+            self::EXCHANGE_CODE_INVALID,
+            self::EXCHANGE_CODE_WRONG_PRODUCT,
+            self::LICENSE_NOT_FOUND,
+            self::DOMAIN_NOT_ACTIVATED,
+            self::NO_RELEASE,
+            self::PLUGIN_NOT_FOUND,
         ];
     }
 
