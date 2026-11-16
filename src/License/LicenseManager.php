@@ -993,6 +993,7 @@ class LicenseManager
             'license_id' => $license['license_id'] ?? $response['license_id'] ?? ($existing['license_id'] ?? null),
             'manage_url' => (string) ($license['manage_url'] ?? $response['manage_url'] ?? ($existing['manage_url'] ?? '')),
             'upgrade_url' => (string) ($license['upgrade_url'] ?? $response['upgrade_url'] ?? ($existing['upgrade_url'] ?? '')),
+            'support_url' => (string) ($license['support_url'] ?? $response['support_url'] ?? ($existing['support_url'] ?? '')),
             'buyer' => $buyer,
             'sites' => is_array($sitesRaw) ? $this->mapSites($sitesRaw) : ($existing['sites'] ?? null),
             'site' => is_array($siteRaw) ? $this->mapSiteState($siteRaw) : ($existing['site'] ?? null),

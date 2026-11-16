@@ -43,9 +43,9 @@ Returned on `activate` / `validate` / `deactivate` failures, as
 
 | `error_code`               | When Nexus should emit it                                   | Suggested HTTP | Default English message |
 |----------------------------|-------------------------------------------------------------|---------------:|-------------------------|
-| `invalid_key`              | The key does not exist or is malformed.                     | 422            | The license key is invalid. |
+| `invalid_key`              | The key does not exist or is malformed.                     | 404            | The license key is invalid. |
 | `key_disabled`             | The key exists but has been disabled.                       | 403            | This license key has been disabled. |
-| `activation_limit_reached` | No activation slots remain for the key.                     | 409            | You've reached the activation limit for this license. |
+| `activation_limit_reached` | No activation slots remain for the key.                     | 403            | You've reached the activation limit for this license. |
 | `domain_not_allowed`       | This domain may not activate the key.                       | 403            | This domain is not allowed to activate this license. |
 | `wrong_product`            | The key exists but belongs to a different product.          | 403            | This license key is for a different product. |
 | `license_expired`          | The key is expired (rejected during an action).             | 403            | This license has expired. |
@@ -54,6 +54,18 @@ Returned on `activate` / `validate` / `deactivate` failures, as
 | `item_not_covered`         | Update manifest: the request's `item_slug` is not one the license covers. Carries `covers`. The SDK also uses it for the same 403 with no code ("This license does not cover …"). | 403 | This license does not include this plugin. |
 | `rate_limited`             | Too many requests from this caller. The SDK also uses it for any 429 without a code, and passes `Retry-After` on as `retry_after` (seconds). | 429 | Too many requests. Please try again shortly. |
 | `token_expired`            | An account (api/v1) access token has expired.               | 401            | (handled by the SDK — see `account_expired`) |
+| `not_activated`            | Deactivate: this domain holds no seat on the license. (The SDK raises the same word for "no key is stored here".) | 404 | This site is not activated. |
+| `nothing_to_update`        | Update manifest: the license names nothing that receives updates. | 422 | This license does not include a plugin that receives updates. |
+| `product_not_found`        | Update manifest or download: no store at this address.      | 404            | The store could not be found. |
+| `store_required`           | Account routes: no store was named (send `product_slug`).   | 422            | (host's words) |
+| `store_mismatch`           | Account routes: the token belongs to another store.         | 403            | (host's words) |
+| `store_forbidden`          | Account routes: the account may not use this store.         | 403            | (host's words) |
+| `exchange_code_invalid`    | Sign-in exchange: the code is unknown, used or expired.     | 422            | (host's words) |
+| `exchange_code_wrong_product` | Sign-in exchange: the code was issued for another product. | 422          | (host's words) |
+| `license_not_found`        | Download: no license with that id.                          | 404            | (host's words) |
+| `domain_not_activated`     | Download: the license holds no activation for this domain.  | 403            | (host's words) |
+| `no_release`               | Download: the product has no release to give.               | 404            | (host's words) |
+| `plugin_not_found`         | Download: no plugin with that slug.                         | 404            | (host's words) |
 | `server_error`             | Nexus hit an internal error. The SDK also uses it for any 5xx without a code, including an HTML error page. | 500 | The licensing server had a problem. Please try again. |
 | `unknown`                  | Any other error with no specific code.                      | 4xx/5xx        | An unexpected error occurred. |
 

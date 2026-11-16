@@ -451,6 +451,17 @@ class LicenseManagerTest extends TestCase
         $this->assertGreaterThanOrEqual(time() - 5, $this->manager->getLicenseData()['last_success_at']);
     }
 
+    public function test_the_support_link_nexus_sends_is_stored(): void
+    {
+        $license = ['status' => 'active', 'features' => [], 'support_url' => 'https://nexus.test/support'];
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]);
+        WpStub::queueJson(200, ['success' => true, 'license' => $license]);
+
+        $data = $this->manager->activate('KEY-001');
+
+        $this->assertSame('https://nexus.test/support', $data['support_url']);
+    }
+
     public function test_license_page_details_are_stored(): void
     {
         $license = [
