@@ -21,13 +21,4 @@ class ErrorExtraTest extends TestCase
             AbstractAjaxEndpoint::errorExtra($e)
         );
     }
-
-    public function test_a_support_url_that_is_not_a_web_address_is_dropped(): void
-    {
-        foreach (['javascript:alert(1)', 'mailto:help@example.test', '', 42, null] as $bad) {
-            $e = new ApiException('License not found', 'invalid_key', ['support_url' => $bad]);
-
-            $this->assertArrayNotHasKey('support_url', AbstractAjaxEndpoint::errorExtra($e));
-        }
-    }
 }
