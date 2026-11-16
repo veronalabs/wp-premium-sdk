@@ -8,6 +8,7 @@ All notable changes to this package are documented here. The format follows
 
 ### Added
 
+- A failed license or account action now forwards the `support_url` Nexus attaches to a refusal (`invalid_key`, `wrong_product`, `domain_not_allowed`, a stopped license) next to the `renewal` block, so a host can offer Contact support. Only an http(s) address is forwarded.
 - `PremiumServiceProvider::uninstall(bool $releaseSeat = true)` for the host's `uninstall.php`: releases this site's seat on Nexus (best-effort, 5-second timeout, never throws), then deletes the option row, the `{option_key}_cipher` fallback key and the manifest cache transients. The SDK still registers no activation, deactivation or uninstall hooks.
 - `get_status` returns `state`, the `LicenseManager::classify()` result. (#13)
 - License sub-actions `list_sites` and `remove_site`, working on the license key: list the sites on the license (fetched fresh with this site's domain, each flagged `this_site`) and release another site's seat. This site is refused with code `this_site`. (#14)
